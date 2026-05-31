@@ -24,7 +24,6 @@ import io.prometheus.client.Histogram;
 import jenkins.model.Jenkins;
 import lombok.extern.slf4j.Slf4j;
 import org.jenkinsci.Symbol;
-import org.jenkinsci.plugins.cloudstats.ProvisioningActivity;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -189,8 +188,10 @@ public class OrphanedNodesCleaner extends PeriodicWork {
         if (agent.getCloudName() != null) {
             return agent.getCloudName();
         }
-        final ProvisioningActivity.Id id = agent.getId();
-        return id != null ? id.getCloudName() : null;
+        // getId() is @NonNull (provisioningId is required at construction), so
+        // no null guard here; getCloudName() may itself be null, which the
+        // caller's cloud.name.equals(...) handles (equals(null) is false).
+        return agent.getId().getCloudName();
     }
 
     private static void removeGhostNode(HetznerServerAgent agent, HetznerCloud cloud) {
