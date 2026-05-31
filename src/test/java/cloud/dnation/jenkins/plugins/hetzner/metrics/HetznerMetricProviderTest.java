@@ -1,0 +1,595 @@
+/*
+ * Copyright 2026 Percona LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *          http://www.apache.org/licenses/LICENSE-2.0
+ */
+package cloud.dnation.jenkins.plugins.hetzner.metrics;
+
+import io.prometheus.client.CollectorRegistry;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Verifies every {@link HetznerMetricProvider} instrument registers with the
+ * default registry and responds to its primary mutation site. Hook-site
+ * integration (DcCircuitBreaker, TemplateErrorTracker, HetznerApiClient,
+ * etc.) is exercised via the existing in-memory state machines so we do not
+ * have to stand up a full Jenkins runtime here.
+ */
+class HetznerMetricProviderTest {
+
+    private static final CollectorRegistry R = CollectorRegistry.defaultRegistry;
+
+    @BeforeEach
+    void resetMetrics() {
+        HetznerMetricProvider.resetForTest();
+    }
+
+    // ---- Provisioning lifecycle ------------------------------------------
+
+    @Test
+    void pendingProvisionsGaugeReflectsSetCalls() {
+        HetznerMetricProvider.PROVISIONING_PENDING.labels("test-cloud").set(3);
+        assertEquals(3.0, sample("hetzner_provisioning_pending", "cloud", "test-cloud"));
+    }
+
+    /**
+     * Lock down the authoritative outcome enumeration. Every value emitted on
+     * {@link HetznerMetricProvider#PROVISION_ATTEMPTS} MUST be one of the
+     * constants exposed on the provider so dashboards/alerting rules can be
+     * cross-checked against this single source. Post-merge CV2 finding: prior
+     * to this commit four production outcomes were undocumented.
+     */
+    @Test
+    void provisionOutcomesEnumerationIsExhaustive() {
+        // Constants and the set must agree.
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_SUCCESS));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_RATE_LIMITED));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_UNCLASSIFIED_THROTTLE));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_CONFIG_ERROR));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_CAP_REACHED_UNDER_LOCK));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_FAILOVER_INCOMPATIBLE));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_DC_UNAVAILABLE));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_DC_ATTRIBUTABLE));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_FAILURE));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_BOOTSTRAP_IO));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_BOOTSTRAP_OTHER));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES
+                .contains(HetznerMetricProvider.OUTCOME_DC_BREAKER_OPEN),
+                "v103.percona.26: dc_breaker_open must be in ALL_PROVISION_OUTCOMES");
+        // 12 attempt outcomes (v26 added dc_breaker_open); OUTCOME_PRECHECK_FAILURE
+        // lives on the duration histogram only, not on PROVISION_ATTEMPTS.
+        assertEquals(12, HetznerMetricProvider.ALL_PROVISION_OUTCOMES.size());
+    }
+
+    /**
+     * v103.percona.26: lock down the PROVISION_SKIPPED reasons enumeration.
+     * Mirrors the outcome-enumeration invariant: every {@code reason} value
+     * emitted on PROVISION_SKIPPED MUST be one of the REASON_* constants
+     * exposed on the provider.
+     */
+    @Test
+    void provisionSkippedReasonsEnumerationIsExhaustive() {
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS
+                .contains(HetznerMetricProvider.REASON_JENKINS_QUIETING));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS
+                .contains(HetznerMetricProvider.REASON_RATE_LIMITED));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS
+                .contains(HetznerMetricProvider.REASON_TEMPLATE_SUPPRESSED));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS
+                .contains(HetznerMetricProvider.REASON_CAP_REACHED));
+        assertTrue(HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS
+                .contains(HetznerMetricProvider.REASON_NO_HEALTHY_DC));
+        assertEquals(5, HetznerMetricProvider.ALL_PROVISION_SKIPPED_REASONS.size(),
+                "5 reasons: jenkins_quieting, rate_limited, template_suppressed, cap_reached, no_healthy_dc");
+    }
+
+    @Test
+    void precheckOutcomesAreASubsetOfAllOutcomes() {
+        // Every precheck outcome (rerouted onto PROVISION_DURATION as
+        // outcome=precheck_failure) must also be a valid PROVISION_ATTEMPTS
+        // outcome so dashboards relating the two metrics stay consistent.
+        for (String o : HetznerMetricProvider.PRECHECK_OUTCOMES) {
+            assertTrue(HetznerMetricProvider.ALL_PROVISION_OUTCOMES.contains(o),
+                    "precheck outcome " + o + " is not in ALL_PROVISION_OUTCOMES");
+        }
+        // OUTCOME_PRECHECK_FAILURE itself is distinct -- only the histogram
+        // observes it, never the attempts counter.
+        assertEquals("precheck_failure", HetznerMetricProvider.OUTCOME_PRECHECK_FAILURE);
+    }
+
+    @Test
+    void orphanCleanupKindEnumerationIsExhaustive() {
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_FETCH_SERVERS));
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_DESTROY_SERVER));
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_DESTROY_FAILED));
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_REMOVE_NODE));
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_RATE_LIMITED));
+        assertTrue(HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS
+                .contains(HetznerMetricProvider.ORPHAN_KIND_UNEXPECTED));
+        assertEquals(6, HetznerMetricProvider.ALL_ORPHAN_CLEANUP_KINDS.size());
+    }
+
+    @Test
+    void runningServersGaugeReflectsSetCalls() {
+        HetznerMetricProvider.RUNNING_SERVERS.labels("test-cloud",
+                HetznerMetricProvider.ARCH_AMD64).set(7);
+        HetznerMetricProvider.RUNNING_SERVERS.labels("test-cloud",
+                HetznerMetricProvider.ARCH_ARM64).set(3);
+        assertEquals(7.0, sample("hetzner_running_servers",
+                new String[]{"cloud", "arch"},
+                new String[]{"test-cloud", "amd64"}));
+        assertEquals(3.0, sample("hetzner_running_servers",
+                new String[]{"cloud", "arch"},
+                new String[]{"test-cloud", "arm64"}));
+    }
+
+    @Test
+    void instanceCapGaugeReflectsSetCalls() {
+        HetznerMetricProvider.INSTANCE_CAP.labels("test-cloud").set(50);
+        assertEquals(50.0, sample("hetzner_instance_cap", "cloud", "test-cloud"));
+    }
+
+    @Test
+    void provisionUnderflowCounterIncrements() {
+        HetznerMetricProvider.PROVISION_UNDERFLOW.labels("test-cloud").inc();
+        HetznerMetricProvider.PROVISION_UNDERFLOW.labels("test-cloud").inc();
+        assertEquals(2.0, sample("hetzner_provision_underflow_total", "cloud", "test-cloud"));
+    }
+
+    @Test
+    void provisionUncaughtCounterIncrements() {
+        HetznerMetricProvider.PROVISION_UNCAUGHT.labels("test-cloud").inc();
+        assertEquals(1.0, sample("hetzner_provision_uncaught_exceptions_total",
+                "cloud", "test-cloud"));
+    }
+
+    @Test
+    void provisionAttemptsCounterIncrements() {
+        HetznerMetricProvider.PROVISION_ATTEMPTS
+                .labels("test-cloud", "docker-x64-min", "success").inc();
+        HetznerMetricProvider.PROVISION_ATTEMPTS
+                .labels("test-cloud", "docker-x64-min", "success").inc();
+        assertEquals(2.0, sample("hetzner_provision_attempts_total",
+                new String[]{"cloud", "template", "outcome"},
+                new String[]{"test-cloud", "docker-x64-min", "success"}));
+    }
+
+    @Test
+    void provisionSkippedCounterIncrements() {
+        HetznerMetricProvider.PROVISION_SKIPPED.labels("test-cloud", "cap_reached").inc();
+        assertEquals(1.0, sample("hetzner_provision_skipped_total",
+                new String[]{"cloud", "reason"},
+                new String[]{"test-cloud", "cap_reached"}));
+    }
+
+    @Test
+    void provisionDurationHistogramExposesSumCountAndBuckets() {
+        HetznerMetricProvider.PROVISION_DURATION
+                .labels("test-cloud", "docker-x64-min", "fsn1", "success").observe(42.0);
+        Double count = R.getSampleValue("hetzner_provision_duration_seconds_count",
+                new String[]{"cloud", "template", "dc", "outcome"},
+                new String[]{"test-cloud", "docker-x64-min", "fsn1", "success"});
+        Double sum = R.getSampleValue("hetzner_provision_duration_seconds_sum",
+                new String[]{"cloud", "template", "dc", "outcome"},
+                new String[]{"test-cloud", "docker-x64-min", "fsn1", "success"});
+        Double bucketInf = R.getSampleValue("hetzner_provision_duration_seconds_bucket",
+                new String[]{"cloud", "template", "dc", "outcome", "le"},
+                new String[]{"test-cloud", "docker-x64-min", "fsn1", "success", "+Inf"});
+        assertEquals(1.0, count);
+        assertEquals(42.0, sum);
+        assertEquals(1.0, bucketInf);
+    }
+
+    @Test
+    void provisionLeakedAndDestroyFailureCountersIncrement() {
+        HetznerMetricProvider.PROVISION_LEAKED_SERVERS
+                .labels("test-cloud", "docker-x64-min").inc();
+        HetznerMetricProvider.PROVISION_LEAK_DESTROY_FAILURES
+                .labels("test-cloud", "docker-x64-min").inc();
+        assertEquals(1.0, sample("hetzner_provision_leaked_servers_total",
+                new String[]{"cloud", "template"},
+                new String[]{"test-cloud", "docker-x64-min"}));
+        assertEquals(1.0, sample("hetzner_provision_leak_destroy_failures_total",
+                new String[]{"cloud", "template"},
+                new String[]{"test-cloud", "docker-x64-min"}));
+    }
+
+    // ---- DC failover -----------------------------------------------------
+
+    @Test
+    void dcBreakerStateGaugeReflectsOrdinal() {
+        HetznerMetricProvider.DC_BREAKER_STATE.labels("fsn1", "amd64").set(1); // OPEN
+        assertEquals(1.0, sample("hetzner_dc_circuit_breaker_state",
+                new String[]{"location", "arch"}, new String[]{"fsn1", "amd64"}));
+    }
+
+    @Test
+    void dcBreakerTransitionCounterIncrements() {
+        HetznerMetricProvider.DC_BREAKER_TRANSITIONS.labels("fsn1", "amd64", "CLOSED", "OPEN").inc();
+        assertEquals(1.0, sample("hetzner_dc_circuit_breaker_transitions_total",
+                new String[]{"location", "arch", "from", "to"},
+                new String[]{"fsn1", "amd64", "CLOSED", "OPEN"}));
+    }
+
+    @Test
+    void dcBreakerConsecutiveFailuresGaugeReflectsSet() {
+        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels("fsn1", "amd64").set(5);
+        assertEquals(5.0, sample("hetzner_dc_circuit_breaker_consecutive_failures",
+                new String[]{"location", "arch"}, new String[]{"fsn1", "amd64"}));
+    }
+
+    @Test
+    void dcFailoverCounterIncrements() {
+        HetznerMetricProvider.DC_FAILOVER.labels("fsn1", "nbg1").inc();
+        assertEquals(1.0, sample("hetzner_dc_failover_total",
+                new String[]{"from_dc", "to_dc"},
+                new String[]{"fsn1", "nbg1"}));
+    }
+
+    // ---- Orphan / ghost cleanup ------------------------------------------
+
+    @Test
+    void orphanReapedAndGhostRemovedCountersIncrement() {
+        HetznerMetricProvider.ORPHAN_REAPED.labels("hetzner-cloud",
+                HetznerMetricProvider.ARCH_AMD64).inc();
+        HetznerMetricProvider.ORPHAN_REAPED.labels("hetzner-cloud",
+                HetznerMetricProvider.ARCH_ARM64).inc();
+        HetznerMetricProvider.GHOST_REMOVED.labels("hetzner-cloud").inc();
+        assertEquals(1.0, sample("hetzner_orphan_servers_reaped_total",
+                new String[]{"cloud", "arch"},
+                new String[]{"hetzner-cloud", "amd64"}));
+        assertEquals(1.0, sample("hetzner_orphan_servers_reaped_total",
+                new String[]{"cloud", "arch"},
+                new String[]{"hetzner-cloud", "arm64"}));
+        assertEquals(1.0, sample("hetzner_ghost_nodes_removed_total",
+                "cloud", "hetzner-cloud"));
+    }
+
+    @Test
+    void orphanCleanupErrorCounterIncrements() {
+        HetznerMetricProvider.ORPHAN_CLEANUP_ERRORS.labels("hetzner-cloud", "fetch_servers").inc();
+        assertEquals(1.0, sample("hetzner_orphan_cleanup_errors_total",
+                new String[]{"cloud", "kind"},
+                new String[]{"hetzner-cloud", "fetch_servers"}));
+    }
+
+    @Test
+    void orphanCleanupDurationHistogramObservesValues() {
+        HetznerMetricProvider.ORPHAN_CLEANUP_DURATION.labels("hetzner-cloud").observe(0.5);
+        Double count = R.getSampleValue("hetzner_orphan_cleanup_duration_seconds_count",
+                new String[]{"cloud"}, new String[]{"hetzner-cloud"});
+        Double sum = R.getSampleValue("hetzner_orphan_cleanup_duration_seconds_sum",
+                new String[]{"cloud"}, new String[]{"hetzner-cloud"});
+        assertEquals(1.0, count);
+        assertEquals(0.5, sum);
+    }
+
+    // ---- Template suppression --------------------------------------------
+
+    @Test
+    void templateSuppressionCountersAndGaugesUpdate() {
+        HetznerMetricProvider.TEMPLATE_SUPPRESSED_TOTAL.labels("docker-x64-min").inc();
+        HetznerMetricProvider.TEMPLATE_SUPPRESSED_ACTIVE.labels("docker-x64-min").set(1);
+        HetznerMetricProvider.TEMPLATE_ERRORS.labels("docker-x64-min").inc();
+        HetznerMetricProvider.TEMPLATE_CONSECUTIVE_ERRORS.labels("docker-x64-min").set(2);
+
+        assertEquals(1.0, sample("hetzner_template_suppressed_total",
+                "template", "docker-x64-min"));
+        assertEquals(1.0, sample("hetzner_template_suppressed_active",
+                "template", "docker-x64-min"));
+        assertEquals(1.0, sample("hetzner_template_errors_total",
+                "template", "docker-x64-min"));
+        assertEquals(2.0, sample("hetzner_template_consecutive_errors",
+                "template", "docker-x64-min"));
+    }
+
+    // ---- Architecture validation -----------------------------------------
+
+    @Test
+    void archValidationFailureCounterIncrements() {
+        HetznerMetricProvider.ARCH_VALIDATION_FAILURES.labels("api", "cax41", "cpx62").inc();
+        assertEquals(1.0, sample("hetzner_arch_validation_failures_total",
+                new String[]{"phase", "requested", "actual"},
+                new String[]{"api", "cax41", "cpx62"}));
+    }
+
+    // ---- API rate limit --------------------------------------------------
+
+    @Test
+    void apiRateLimitGaugesReflectSet() {
+        HetznerMetricProvider.API_RATE_LIMIT_REMAINING.labels("creds-1").set(123);
+        HetznerMetricProvider.API_RATE_LIMIT_LIMIT.labels("creds-1").set(3600);
+        HetznerMetricProvider.API_RATE_LIMITED.labels("creds-1").set(1);
+
+        assertEquals(123.0, sample("hetzner_api_rate_limit_remaining",
+                "credentials_id", "creds-1"));
+        assertEquals(3600.0, sample("hetzner_api_rate_limit_limit",
+                "credentials_id", "creds-1"));
+        assertEquals(1.0, sample("hetzner_api_rate_limited",
+                "credentials_id", "creds-1"));
+    }
+
+    @Test
+    void apiRequestsCounterIncrements() {
+        HetznerMetricProvider.API_REQUESTS.labels("creds-1", "GET", "2xx").inc();
+        HetznerMetricProvider.API_REQUESTS.labels("creds-1", "POST", "5xx").inc();
+        assertEquals(1.0, sample("hetzner_api_requests_total",
+                new String[]{"credentials_id", "method", "status_class"},
+                new String[]{"creds-1", "GET", "2xx"}));
+        assertEquals(1.0, sample("hetzner_api_requests_total",
+                new String[]{"credentials_id", "method", "status_class"},
+                new String[]{"creds-1", "POST", "5xx"}));
+    }
+
+    @Test
+    void apiRequestDurationHistogramObservesValues() {
+        HetznerMetricProvider.API_REQUEST_DURATION.labels("creds-1", "GET").observe(0.25);
+        Double count = R.getSampleValue("hetzner_api_request_duration_seconds_count",
+                new String[]{"credentials_id", "method"},
+                new String[]{"creds-1", "GET"});
+        Double sum = R.getSampleValue("hetzner_api_request_duration_seconds_sum",
+                new String[]{"credentials_id", "method"},
+                new String[]{"creds-1", "GET"});
+        assertEquals(1.0, count);
+        assertEquals(0.25, sum);
+    }
+
+    @Test
+    void apiRetryAndExhaustedCountersIncrement() {
+        HetznerMetricProvider.API_RETRIES.labels("creds-1", "http_502").inc();
+        HetznerMetricProvider.API_RETRIES.labels("creds-1", "timeout").inc();
+        HetznerMetricProvider.API_RETRIES_EXHAUSTED.labels("creds-1", "timeout").inc();
+        HetznerMetricProvider.API_TOKEN_INVALIDATED.labels("creds-1").inc();
+
+        assertEquals(1.0, sample("hetzner_api_retries_total",
+                new String[]{"credentials_id", "reason"},
+                new String[]{"creds-1", "http_502"}));
+        assertEquals(1.0, sample("hetzner_api_retries_total",
+                new String[]{"credentials_id", "reason"},
+                new String[]{"creds-1", "timeout"}));
+        assertEquals(1.0, sample("hetzner_api_retries_exhausted_total",
+                new String[]{"credentials_id", "reason"},
+                new String[]{"creds-1", "timeout"}));
+        assertEquals(1.0, sample("hetzner_api_token_invalidated_total",
+                "credentials_id", "creds-1"));
+    }
+
+    // ---- Static info / runtime metadata ----------------------------------
+
+    @Test
+    void pluginInfoIsSetAtClassInit() {
+        // Plugin info is set in a static block; it's the only metric not
+        // cleared by resetForTest(). At least one sample should exist with
+        // the configured labels (we don't pin the version since it depends on
+        // the JAR manifest at build time).
+        var families = R.metricFamilySamples();
+        boolean foundInfo = false;
+        while (families.hasMoreElements()) {
+            var family = families.nextElement();
+            if ("hetzner_plugin_info".equals(family.name)) {
+                foundInfo = !family.samples.isEmpty();
+                break;
+            }
+        }
+        assertTrue(foundInfo, "hetzner_plugin_info should be registered with at least one sample");
+    }
+
+    @Test
+    void cloudInfoGaugeRespondsToSet() {
+        HetznerMetricProvider.CLOUD_INFO.labels("hetzner-cloud", "creds-1").set(1);
+        assertEquals(1.0, sample("hetzner_cloud_info",
+                new String[]{"cloud", "credentials_id"},
+                new String[]{"hetzner-cloud", "creds-1"}));
+    }
+
+    @Test
+    void templateInfoGaugeRespondsToSet() {
+        HetznerMetricProvider.TEMPLATE_INFO.labels(
+                "hetzner-cloud", "docker-x64-min", "ubuntu-22.04", "cpx62", "fsn1"
+        ).set(1);
+        assertEquals(1.0, sample("hetzner_template_info",
+                new String[]{"cloud", "template", "image", "server_type", "location"},
+                new String[]{"hetzner-cloud", "docker-x64-min", "ubuntu-22.04", "cpx62", "fsn1"}));
+    }
+
+    @Test
+    void templateExecutorsGaugeRespondsToSet() {
+        HetznerMetricProvider.TEMPLATE_EXECUTORS.labels("hetzner-cloud", "docker-x64-min").set(2);
+        assertEquals(2.0, sample("hetzner_template_executors",
+                new String[]{"cloud", "template"},
+                new String[]{"hetzner-cloud", "docker-x64-min"}));
+    }
+
+    @Test
+    void cloudTemplateCountGaugeRespondsToSet() {
+        HetznerMetricProvider.CLOUD_TEMPLATE_COUNT.labels("hetzner-cloud").set(5);
+        assertEquals(5.0, sample("hetzner_cloud_template_count",
+                "cloud", "hetzner-cloud"));
+    }
+
+    @Test
+    void runtimeInfoIsSetAtClassInit() {
+        // Like PLUGIN_INFO, set once in the static block. Labels are populated
+        // from System.getProperty(os.name/os.arch/os.version/java.version)
+        // and the EC2_INSTANCE_TYPE env var.
+        var families = R.metricFamilySamples();
+        boolean foundInfo = false;
+        while (families.hasMoreElements()) {
+            var family = families.nextElement();
+            if ("hetzner_runtime_info".equals(family.name)) {
+                foundInfo = !family.samples.isEmpty();
+                if (foundInfo) {
+                    var sample = family.samples.get(0);
+                    // labels are: os_name, os_arch, os_version, java_version, ec2_instance_type
+                    assertEquals(5, sample.labelValues.size(),
+                            "RUNTIME_INFO must have exactly 5 label values");
+                    // Sanity: os_name should be a known platform string
+                    String osName = sample.labelValues.get(0);
+                    assertTrue(osName.equals("linux") || osName.equals("mac_os_x")
+                                    || osName.equals("windows") || osName.startsWith("mac")
+                                    || osName.startsWith("linux"),
+                            "os_name should be a recognized platform, got: " + osName);
+                }
+                break;
+            }
+        }
+        assertTrue(foundInfo, "hetzner_runtime_info should be registered with at least one sample");
+    }
+
+    // ---- Coverage sanity check -------------------------------------------
+
+    /**
+     * Lightweight smoke test that all the well-known metric family names are
+     * reachable from {@link CollectorRegistry#defaultRegistry}. Catches typos
+     * and accidental .register() removals.
+     */
+    @Test
+    void allExpectedMetricFamiliesAreRegistered() {
+        String[] expected = {
+                "hetzner_provisioning_pending",
+                "hetzner_running_servers",
+                "hetzner_instance_cap",
+                "hetzner_provision_underflow_total",
+                "hetzner_provision_uncaught_exceptions_total",
+                "hetzner_provision_duration_seconds",
+                "hetzner_provision_attempts_total",
+                "hetzner_provision_skipped_total",
+                "hetzner_provision_leaked_servers_total",
+                "hetzner_provision_leak_destroy_failures_total",
+                "hetzner_dc_circuit_breaker_state",
+                "hetzner_dc_circuit_breaker_consecutive_failures",
+                "hetzner_dc_circuit_breaker_transitions_total",
+                "hetzner_dc_failover_total",
+                "hetzner_orphan_servers_reaped_total",
+                "hetzner_ghost_nodes_removed_total",
+                "hetzner_orphan_cleanup_errors_total",
+                "hetzner_orphan_cleanup_duration_seconds",
+                "hetzner_template_suppressed_total",
+                "hetzner_template_suppressed_active",
+                "hetzner_template_errors_total",
+                "hetzner_template_consecutive_errors",
+                "hetzner_arch_validation_failures_total",
+                "hetzner_api_rate_limit_remaining",
+                "hetzner_api_rate_limit_limit",
+                "hetzner_api_rate_limited",
+                "hetzner_api_requests_total",
+                "hetzner_api_request_duration_seconds",
+                "hetzner_api_retries_total",
+                "hetzner_api_retries_exhausted_total",
+                "hetzner_api_token_invalidated_total",
+                "hetzner_plugin_info",
+                "hetzner_cloud_info",
+                "hetzner_template_info",
+                "hetzner_template_executors",
+                "hetzner_cloud_template_count",
+                "hetzner_runtime_info",
+        };
+        java.util.Set<String> registered = new java.util.HashSet<>();
+        var iter = R.metricFamilySamples();
+        while (iter.hasMoreElements()) {
+            registered.add(iter.nextElement().name);
+        }
+        for (String name : expected) {
+            // simpleclient strips the "_total" suffix from a Counter's family
+            // name, so a Counter declared as "foo_total" appears in the registry
+            // under family name "foo". Histograms / Summaries also expose
+            // {_count, _sum, _bucket} samples under the base family name.
+            String baseFamily = name.endsWith("_total")
+                    ? name.substring(0, name.length() - "_total".length())
+                    : name;
+            assertTrue(registered.contains(name)
+                            || registered.contains(baseFamily)
+                            || registered.contains(name + "_count")
+                            || registered.contains(name + "_sum"),
+                    "expected metric family not registered: " + name
+                            + " (also tried: " + baseFamily + ")");
+        }
+    }
+
+    // ---- Architecture label helper (v103.percona.23) ---------------------
+
+    @Test
+    void archOf_mapsCpxFamilyToAmd64() {
+        assertEquals(HetznerMetricProvider.ARCH_AMD64, HetznerMetricProvider.archOf("cpx42"));
+        assertEquals(HetznerMetricProvider.ARCH_AMD64, HetznerMetricProvider.archOf("cpx62"));
+        assertEquals(HetznerMetricProvider.ARCH_AMD64, HetznerMetricProvider.archOf("CPX22"));
+    }
+
+    @Test
+    void archOf_mapsCaxFamilyToArm64() {
+        assertEquals(HetznerMetricProvider.ARCH_ARM64, HetznerMetricProvider.archOf("cax31"));
+        assertEquals(HetznerMetricProvider.ARCH_ARM64, HetznerMetricProvider.archOf("cax41"));
+        assertEquals(HetznerMetricProvider.ARCH_ARM64, HetznerMetricProvider.archOf("CAX21"));
+    }
+
+    @Test
+    void archOf_mapsLegacyCxAndCcxFamiliesToAmd64() {
+        // cx* (legacy Intel) and ccx* (dedicated AMD64) both pre-date the
+        // cpx/cax naming and are still occasionally available.
+        assertEquals(HetznerMetricProvider.ARCH_AMD64, HetznerMetricProvider.archOf("cx11"));
+        assertEquals(HetznerMetricProvider.ARCH_AMD64, HetznerMetricProvider.archOf("ccx13"));
+    }
+
+    @Test
+    void archOf_unrecognisedOrEmptyMapsToUnknown() {
+        assertEquals(HetznerMetricProvider.ARCH_UNKNOWN, HetznerMetricProvider.archOf(null));
+        assertEquals(HetznerMetricProvider.ARCH_UNKNOWN, HetznerMetricProvider.archOf(""));
+        assertEquals(HetznerMetricProvider.ARCH_UNKNOWN, HetznerMetricProvider.archOf("foo99"));
+    }
+
+    @Test
+    void alwaysEmitArchsExcludesUnknown() {
+        // v24: only amd64/arm64 are zero-emitted every refresh. unknown is
+        // lazy: it appears in Mimir only after a non-canonical SKU has
+        // actually been observed at least once on the cloud.
+        assertTrue(HetznerMetricProvider.ALWAYS_EMIT_ARCHS.contains(HetznerMetricProvider.ARCH_AMD64));
+        assertTrue(HetznerMetricProvider.ALWAYS_EMIT_ARCHS.contains(HetznerMetricProvider.ARCH_ARM64));
+        assertFalse(HetznerMetricProvider.ALWAYS_EMIT_ARCHS.contains(HetznerMetricProvider.ARCH_UNKNOWN));
+        assertEquals(2, HetznerMetricProvider.ALWAYS_EMIT_ARCHS.size());
+    }
+
+    @Test
+    void knownArchsCoversAllEmittedValues() {
+        // KNOWN_ARCHS is the full catalogue (used by reset helpers and tests
+        // that want to enumerate every label value the plugin might emit).
+        assertTrue(HetznerMetricProvider.KNOWN_ARCHS.contains(HetznerMetricProvider.ARCH_AMD64));
+        assertTrue(HetznerMetricProvider.KNOWN_ARCHS.contains(HetznerMetricProvider.ARCH_ARM64));
+        assertTrue(HetznerMetricProvider.KNOWN_ARCHS.contains(HetznerMetricProvider.ARCH_UNKNOWN));
+        assertEquals(3, HetznerMetricProvider.KNOWN_ARCHS.size());
+    }
+
+    // ---- Helpers ---------------------------------------------------------
+
+    private static Double sample(String name, String labelName, String labelValue) {
+        return R.getSampleValue(name, new String[]{labelName}, new String[]{labelValue});
+    }
+
+    private static Double sample(String name, String[] labelNames, String[] labelValues) {
+        return R.getSampleValue(name, labelNames, labelValues);
+    }
+}

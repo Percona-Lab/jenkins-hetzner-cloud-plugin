@@ -1,0 +1,22 @@
+Hetzner Cloud Plugin (Percona fork)
+Copyright 2026 Percona LLC
+
+This product is a derivative work of the Hetzner Cloud Plugin for Jenkins
+("hetzner-cloud-plugin"), Copyright 2021 dNation (https://dnation.cloud),
+licensed under the Apache License, Version 2.0.
+
+Percona LLC has made significant changes to the original work, including:
+  - Per-(location, arch) datacenter circuit breakers and health tracking
+    (DcCircuitBreaker, DcHealthTracker).
+  - A native `arch` label and architecture-aware server/orphan metrics.
+  - Prometheus metric provider and HTTP endpoint
+    (metrics/HetznerMetricProvider, metrics/HetznerPrometheusEndpoint).
+  - API rate-limit and retry interceptors (RateLimitInterceptor,
+    RetryInterceptor) and a dedicated Hetzner API client (HetznerApiClient).
+  - Worker rehydration after controller restart (HetznerWorkerRehydrator),
+    hung-build detection (HungBuildDetector), and template error tracking
+    (TemplateErrorTracker).
+  - Retention, orphan-cleanup, and launcher hardening across the modified
+    source files (see per-file "Modified by Percona" notices).
+
+The full list of modified and added files is recorded in CHANGES.md.
