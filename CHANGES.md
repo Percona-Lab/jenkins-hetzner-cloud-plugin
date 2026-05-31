@@ -59,12 +59,14 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerMetricIntegrationTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerMetricsRefresherTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerProvisioningExceptionTest.java
+- src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerServerAgentTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerWorkerRehydratorTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HungBuildDetectorTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/metrics/HetznerMetricProviderTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/metrics/HetznerPrometheusEndpointTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/NodeCallableRetryTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/NodeCallableTest.java
+- src/test/java/cloud/dnation/jenkins/plugins/hetzner/OrphanedNodesCleanerTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/RateLimitInterceptorTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/RetryInterceptorTest.java
 
