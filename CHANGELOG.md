@@ -2,6 +2,41 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.27 (2026-05-31)
+
+Scopes ghost-node cleanup to the owning cloud, closing a multi-cloud
+mass-deletion regression. Ported from upstream commit `5a7a304`, a fix that
+upstream layered on top of our own CRW-timer-death patch (contributed back to
+jenkinsci and shipped there as v106 / commit `796d19b`).
+
+Root cause: the bi-directional `OrphanedNodesCleaner` (added in v103.percona.1)
+compares `Helper.getHetznerAgents()`, which returns agents from ALL Hetzner
+clouds, against `fetchAllServers(cloud.name)`, which returns VMs for a single
+cloud. On a controller configured with more than one `HetznerCloud`, the
+per-cloud cleanup pass treats every agent owned by every other cloud as a
+"ghost node" and removes it, killing active builds every hour. The transient
+`cloud` field on `HetznerServerAgent` is null after deserialization, so the
+cleaner could not previously tell which cloud owns which agent.
+
+Fix: add a persistent `cloudName` field to `HetznerServerAgent` (survives
+restart/deserialization; `serialVersionUID` 1 to 2) and scope the ghost-node
+comparison to agents owned by the cloud being cleaned, so each cloud's pass
+only considers its own agents. Ownership is resolved by
+`OrphanedNodesCleaner.ownerCloudName()`: the persistent `cloudName` field,
+falling back to the cloud name carried by the persistent `provisioningId` for
+agents provisioned before that field existed. This goes one step beyond
+upstream's port, which skips (and therefore leaks) legacy agents whose
+`cloudName` is null; the `provisioningId` fallback lets the owning cloud still
+reap them.
+
+The Percona fleet runs one `HetznerCloud` per master, so the regression is
+latent today; the fix ships as defense-in-depth before any multi-cloud topology
+lands. Tests: `OrphanedNodesCleanerTest` proves ghost removal is scoped per
+cloud and that legacy (null-`cloudName`) agents are attributed via
+`provisioningId`; `HetznerServerAgentTest` covers the new field plus the
+v103.percona.1 `_terminate()`/`isAlive()` null-transient guards, which the fork
+previously had no test for.
+
 ## v103.percona.26 (2026-05-23)
 
 Closes the OPEN-breaker API storm path uncovered by the 2026-05-22 cax arm64

@@ -63,7 +63,7 @@ public class OrphanedNodesCleaner extends PeriodicWork {
         getHetznerClouds().forEach(OrphanedNodesCleaner::cleanCloud);
     }
 
-    private static void cleanCloud(HetznerCloud cloud) {
+    static void cleanCloud(HetznerCloud cloud) {
         if (HetznerApiClient.forCredentials(cloud.getCredentialsId()).isRateLimited()) {
             log.warn("Token rate-limited for cloud '{}', skipping orphan cleanup this cycle", cloud.name);
             // Surface the throttle on the same dashboard panel that monitors
@@ -97,10 +97,17 @@ public class OrphanedNodesCleaner extends PeriodicWork {
                     .forEach(serverDetail -> terminateOrphanedServer(serverDetail, cloud));
 
             // Direction 2: Jenkins nodes without VMs (ghost nodes) -- remove them.
-            // Match by node name prefix (hcloud-) rather than transient cloud field,
-            // which is null after deserialization (exactly the scenario ghost nodes
-            // arise from). All Hetzner nodes use the "hcloud-" naming convention.
+            // IMPORTANT: only consider agents that belong to THIS cloud.
+            // Helper.getHetznerAgents() returns agents from ALL Hetzner clouds,
+            // so without filtering, a cloud with 0 (or non-overlapping) VMs would
+            // incorrectly remove every agent from every other cloud as a "ghost
+            // node" -- an hourly mass-deletion of live agents in multi-cloud setups.
+            //
+            // ownerCloudName() resolves each agent's owning cloud (persistent
+            // cloudName field, with a provisioningId fallback for legacy agents),
+            // so the ghost check is scoped per cloud. See the method javadoc.
             hetznerAgents.stream()
+                    .filter(agent -> cloud.name.equals(ownerCloudName(agent)))
                     .filter(agent -> !hetznerVmNames.contains(agent.getNodeName()))
                     .forEach(agent -> removeGhostNode(agent, cloud));
 
@@ -162,6 +169,29 @@ public class OrphanedNodesCleaner extends PeriodicWork {
             log.warn("Could not parse creation time for server '{}': {}", server.getName(), e.getMessage());
             return true; // fail-safe: treat unparseable as old
         }
+    }
+
+    /**
+     * Resolve the owning cloud name for an agent, used to scope ghost-node
+     * cleanup to the cloud that provisioned it.
+     * <p>
+     * Prefers the persistent {@code cloudName} field (added in v103.percona.27,
+     * ported from upstream {@code 5a7a304}). For agents provisioned before that
+     * field existed, {@code cloudName} is null after XStream load, so we fall
+     * back to the cloud name carried by the persistent {@code provisioningId}
+     * (a fork-local signal upstream's port does not leverage) so legacy ghosts
+     * are still attributed to their owning cloud and cleaned, rather than leaked.
+     *
+     * @return the owning cloud name, or null if it cannot be determined
+     */
+    private static String ownerCloudName(HetznerServerAgent agent) {
+        if (agent.getCloudName() != null) {
+            return agent.getCloudName();
+        }
+        // getId() is @NonNull (provisioningId is required at construction), so
+        // no null guard here; getCloudName() may itself be null, which the
+        // caller's cloud.name.equals(...) handles (equals(null) is false).
+        return agent.getId().getCloudName();
     }
 
     private static void removeGhostNode(HetznerServerAgent agent, HetznerCloud cloud) {
