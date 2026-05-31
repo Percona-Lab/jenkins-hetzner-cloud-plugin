@@ -449,7 +449,7 @@ Wait for cloud-init to finish before launching the remoting JVM.
 - Outer bound is unchanged: `NodeCallable.doProvision` still wraps `computer.connect(false)` in a Future bounded by the template's `bootDeadline` minutes.
 - A long-term follow-up is to pre-bake a Hetzner snapshot with java/docker/awscli installed; that is orthogonal to this fix and will reduce provisioning latency by the cloud-init `modules-final` time on top of fixing the race.
 
-## v103.percona.13 (2026-05-11)
+## v103.percona.13 (2026-05-12)
 
 Justfile pin bump.
 
@@ -459,7 +459,7 @@ Justfile pin bump.
 
 ## v103.percona.12 (2026-05-12)
 
-`NodeCallable` hardening and metrics endpoint follow-ups.
+`NodeCallable` hardening and metrics endpoint follow-ups. Documented intermediate with no standalone git tag; these changes shipped under the `v103.percona.13` release.
 
 ### Fixed
 
@@ -590,7 +590,7 @@ Architecture validation, null-safety, and deployment tooling.
 Retention bug fixes for idle VM accumulation.
 
 ### Fixed
-- **CRW timer death** (critical): `destroyServer()` wrapped `IOException` in unchecked `IllegalStateException`, killing the `ComputerRetentionWork` periodic timer permanently. Changed to log-and-return. Confirmed: CRW was dead for 28 hours on two production instances.
+- **CRW timer death** (critical): `destroyServer()` wrapped `IOException` in unchecked `IllegalStateException`, killing the `ComputerRetentionWork` periodic timer permanently. Changed to log-and-return. Confirmed: CRW was dead for 28 hours on two production instances. This fix was later contributed back to upstream and ships in [jenkinsci/hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) as v106 (commit `796d19b`).
 - **One-directional orphan cleanup**: `OrphanedNodesCleaner` now removes both VMs without Jenkins nodes AND Jenkins nodes without VMs (ghost nodes). Per-item try-catch prevents one failure from blocking cleanup of remaining items.
 - **Null transient fields after restart**: `cloud`, `template`, `serverInstance` are transient and null after deserialization. Added null guards in `_terminate()`, `isAlive()`, `getDisplayName()`.
 - `HetznerCloudResourceManager.refreshServerInfo()` throws `IOException` (checked) instead of `IllegalStateException`.
