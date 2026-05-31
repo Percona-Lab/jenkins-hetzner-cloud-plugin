@@ -16,7 +16,7 @@
 
 # Hetzner Cloud Plugin for Jenkins (Percona patched fork)
 
-Forked from [jenkinsci/hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) v103. Adds Prometheus metrics with a self-contained `/hetzner-prometheus` endpoint, per-(location, arch) DC circuit-breaker failover, rate-limiting and retry with backoff, worker rehydration across controller restarts, hung-build detection, and bi-directional orphan/ghost cleanup. Current version: **v103.percona.26**.
+Forked from [jenkinsci/hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) v103. Adds Prometheus metrics with a self-contained `/hetzner-prometheus` endpoint, per-(location, arch) DC circuit-breaker failover, rate-limiting and retry with backoff, worker rehydration across controller restarts, hung-build detection, and bi-directional orphan/ghost cleanup. Current version: **v103.percona.27**.
 
 ## Percona patches
 
