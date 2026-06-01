@@ -38,6 +38,7 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/HetznerConstants.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/HetznerServerAgent.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/HetznerServerTemplate.java
+- src/main/java/cloud/dnation/jenkins/plugins/hetzner/launcher/AbstractHetznerSshConnector.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/launcher/DefaultConnectionMethod.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/launcher/DefaultV6ConnectionMethod.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/launcher/HetznerServerComputerLauncher.java

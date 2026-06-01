@@ -16,7 +16,7 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
-import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
 import com.cloudbees.plugins.credentials.CredentialsMatchers;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.google.common.base.Preconditions;
@@ -157,9 +157,9 @@ public class Helper {
         assertValidResponse(response, (Function<T, Void>) t -> null);
     }
 
-    public static BasicSSHUserPrivateKey assertSshKey(String credentialsId) {
-        final BasicSSHUserPrivateKey privateKey = CredentialsMatchers.firstOrNull(
-                CredentialsProvider.lookupCredentialsInItemGroup(BasicSSHUserPrivateKey.class, Jenkins.get(), ACL.SYSTEM2,
+    public static SSHUserPrivateKey assertSshKey(String credentialsId) {
+        final SSHUserPrivateKey privateKey = CredentialsMatchers.firstOrNull(
+                CredentialsProvider.lookupCredentialsInItemGroup(SSHUserPrivateKey.class, Jenkins.get(), ACL.SYSTEM2,
                         Collections.emptyList()),
                 CredentialsMatchers.withId(credentialsId));
 

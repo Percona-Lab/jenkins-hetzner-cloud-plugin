@@ -2,6 +2,36 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.28 (2026-06-01)
+
+Resolves SSH credentials by the `SSHUserPrivateKey` interface instead of the
+concrete `BasicSSHUserPrivateKey`, so credentials served by alternative providers
+(notably the AWS Secrets Manager credentials provider, which exposes
+`AwsSshUserPrivateKey`) are visible to the Hetzner cloud. This matches the
+contract the EC2 and EC2-Fleet plugins already use.
+
+Root cause: `Helper.assertSshKey` looked up
+`CredentialsProvider.lookupCredentialsInItemGroup(BasicSSHUserPrivateKey.class, ...)`,
+filtering on the concrete implementation class. `AwsSshUserPrivateKey` implements
+the `SSHUserPrivateKey` interface but does not extend `BasicSSHUserPrivateKey`, so
+it was filtered out at the source and provisioning failed with
+`IllegalStateException: No SSH credentials found with ID '<id>'`, even though the
+credential resolved correctly for every other consumer. The concrete-class lookup
+also hid such credentials from the connector's config dropdown.
+
+Fix: look up the `SSHUserPrivateKey` interface at all four sites (`Helper.assertSshKey`,
+the two `HetznerServerComputerLauncher` connection paths, and the
+`AbstractHetznerSshConnector` config dropdown), and read the key material via the
+interface `getPrivateKeys()` accessor rather than the deprecated singular
+`getPrivateKey()`. The change is strictly widening: every `BasicSSHUserPrivateKey`
+is an `SSHUserPrivateKey`, so existing direct-entry and JCasC keys keep working
+unchanged; only interface-only implementations gain visibility. The
+`SSHAuthenticator<Connection, ...>` generic already binds
+`U extends StandardUsernameCredentials`, so it accepts the interface without
+change, and the alternative provider's lazy value fetch is preserved (the key is
+read only at connect time). Candidate for upstream contribution to
+jenkinsci/hetzner-cloud-plugin, which carries the same concrete-class coupling.
+
 ## v103.percona.27 (2026-05-31)
 
 Scopes ghost-node cleanup to the owning cloud, closing a multi-cloud
