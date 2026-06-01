@@ -12,10 +12,11 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ * Modified by Percona LLC in 2026 (resolve the SSHUserPrivateKey interface so external credential providers work; see NOTICE).
  */
 package cloud.dnation.jenkins.plugins.hetzner.launcher;
 
-import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
 import com.cloudbees.plugins.credentials.CredentialsMatchers;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
@@ -99,7 +100,7 @@ public abstract class AbstractHetznerSshConnector extends AbstractDescribableImp
             }
             return new StandardListBoxModel()
                     .includeEmptyValue()
-                    .includeMatchingAs(ACL.SYSTEM2, owner, BasicSSHUserPrivateKey.class,
+                    .includeMatchingAs(ACL.SYSTEM2, owner, SSHUserPrivateKey.class,
                             Collections.emptyList(), CredentialsMatchers.always());
         }
     }

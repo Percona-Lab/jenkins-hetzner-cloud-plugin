@@ -11,7 +11,7 @@ runs it across a fleet of Jenkins masters; the patches add a resilience +
 observability layer on top of upstream v103.
 
 - Java package: `cloud.dnation.jenkins.plugins.hetzner`.
-- Version: `103.percona.27` (the `justfile` pin and top `CHANGELOG.md` entry — the pin is the source of truth; `.27` is in development here, newest released tag is `v103.percona.26`).
+- Version: `103.percona.28` (the `justfile` pin and top `CHANGELOG.md` entry — the pin is the source of truth; `.28` is in development here, newest released tag is `v103.percona.27`).
 - Git remotes: `origin` = `Percona-Lab/jenkins-hetzner-cloud-plugin` (canonical — PRs/releases), `personal` = `nogueiraanderson/hetzner-cloud-plugin`, `upstream` = `jenkinsci/hetzner-cloud-plugin`. Upstream base: dNation tag `103.v843b_12130985`.
 - **Two distinct changelogs, both kept current:** `CHANGELOG.md` = per-version patch history with the **incident/root-cause behind each change** (read it before touching the resilience code — every behavior has a postmortem). `CHANGES.md` = the Apache-2.0 §4(b) added/modified-file ledger.
 

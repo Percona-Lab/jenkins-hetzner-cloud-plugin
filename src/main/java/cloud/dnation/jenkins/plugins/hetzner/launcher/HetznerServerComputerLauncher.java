@@ -22,7 +22,7 @@ import cloud.dnation.jenkins.plugins.hetzner.HetznerConstants;
 import cloud.dnation.jenkins.plugins.hetzner.HetznerServerAgent;
 import cloud.dnation.jenkins.plugins.hetzner.HetznerServerComputer;
 import com.cloudbees.jenkins.plugins.sshcredentials.SSHAuthenticator;
-import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.trilead.ssh2.Connection;
@@ -144,7 +144,7 @@ public class HetznerServerComputerLauncher extends ComputerLauncher {
         final String username = connector.getUsernameOverride();
         if (username != null) {
             final String credentialsId = node.getTemplate().getConnector().getSshCredentialsId();
-            final BasicSSHUserPrivateKey privateKey = assertSshKey(credentialsId);
+            final SSHUserPrivateKey privateKey = assertSshKey(credentialsId);
             launchCmd = "sudo -n -u " + privateKey.getUsername() + " " + scriptCmd;
         } else {
             launchCmd = scriptCmd;
@@ -190,13 +190,13 @@ public class HetznerServerComputerLauncher extends ComputerLauncher {
                         30_000, 10_000);
                 logger.info("Connected to " + node.getNodeName() + " via " + ipv4 + ":" + port);
                 final String credentialsId = node.getTemplate().getConnector().getSshCredentialsId();
-                final BasicSSHUserPrivateKey privateKey = assertSshKey(credentialsId);
+                final SSHUserPrivateKey privateKey = assertSshKey(credentialsId);
                 final String username = Util.fixNull(node.getTemplate().getConnector().getUsernameOverride(),
                         privateKey.getUsername());
 
                 logger.info("Authenticating using username '" + username + "'");
 
-                final SSHAuthenticator<Connection, BasicSSHUserPrivateKey> authenticator = SSHAuthenticator
+                final SSHAuthenticator<Connection, SSHUserPrivateKey> authenticator = SSHAuthenticator
                         .newInstance(conn, privateKey, username);
 
                 if (authenticator.authenticate(taskListener) && conn.isAuthenticationComplete()) {

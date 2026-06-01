@@ -35,7 +35,7 @@ import cloud.dnation.hetznerclient.PublicNetRequest;
 import cloud.dnation.hetznerclient.ServerDetail;
 import cloud.dnation.hetznerclient.SshKeyDetail;
 import cloud.dnation.jenkins.plugins.hetzner.connect.ConnectivityType;
-import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey;
+import com.cloudbees.jenkins.plugins.sshcredentials.SSHUserPrivateKey;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -366,7 +366,7 @@ public class HetznerCloudResourceManager {
         checkRateLimit("getOrCreateSshKey");
         final HetznerApi client = proxy();
 
-        final BasicSSHUserPrivateKey privateKey = assertSshKey(sshCredId);
+        final SSHUserPrivateKey privateKey = assertSshKey(sshCredId);
         final Response<GetSshKeysBySelectorResponse> searchResponse = client.getSshKeysBySelector(
                         buildLabelExpressionForSshKey(sshCredId))
                 .execute();
@@ -377,7 +377,8 @@ public class HetznerCloudResourceManager {
         if (!sshKeys.isEmpty()) {
             result = Iterables.getOnlyElement(sshKeys);
         } else {
-            final String publicKey = getSSHPublicKeyFromPrivate(privateKey.getPrivateKey(),
+            final String privateKeyMaterial = privateKey.getPrivateKeys().stream().findFirst().orElse("");
+            final String publicKey = getSSHPublicKeyFromPrivate(privateKeyMaterial,
                     Secret.toString(privateKey.getPassphrase()));
             final Response<CreateSshKeyResponse> createResponse = proxy().createSshKey(new CreateSshKeyRequest()
                             .labels(createLabelsForSshKey(sshCredId))

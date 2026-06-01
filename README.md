@@ -16,7 +16,7 @@
 
 # Hetzner Cloud Plugin for Jenkins (Percona patched fork)
 
-Forked from [jenkinsci/hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) v103. Adds Prometheus metrics with a self-contained `/hetzner-prometheus` endpoint, per-(location, arch) DC circuit-breaker failover, rate-limiting and retry with backoff, worker rehydration across controller restarts, hung-build detection, and bi-directional orphan/ghost cleanup. Current version: **v103.percona.27**.
+Forked from [jenkinsci/hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) v103. Adds Prometheus metrics with a self-contained `/hetzner-prometheus` endpoint, per-(location, arch) DC circuit-breaker failover, rate-limiting and retry with backoff, worker rehydration across controller restarts, hung-build detection, and bi-directional orphan/ghost cleanup. Current version: **v103.percona.28**.
 
 ## Percona patches
 
@@ -26,14 +26,14 @@ The CRW timer-death fix (v103.percona.1) was contributed back upstream and ships
 
 ## Releasing a new version
 
-Releases are tag-driven, not merge-driven. Pushing a tag matching `v*.percona.*` triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which derives the Maven `changelist` from the tag (`v103.percona.27` -> `103.percona.27`), builds the HPI, and publishes a GitHub Release with the `.hpi` and its `.sha256`. Merging a PR to `main` runs CI (build + test) only and never publishes; a docs-only change needs no new tag.
+Releases are tag-driven, not merge-driven. Pushing a tag matching `v*.percona.*` triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which derives the Maven `changelist` from the tag (`v103.percona.28` -> `103.percona.28`), builds the HPI, and publishes a GitHub Release with the `.hpi` and its `.sha256`. Merging a PR to `main` runs CI (build + test) only and never publishes; a docs-only change needs no new tag.
 
 ```bash
 # 1. Land the code + a CHANGELOG.md entry on main
 # 2. Bump the justfile `version` pin to match the new tag
 # 3. Tag and push (CI builds + publishes the HPI)
-git tag v103.percona.27
-git push origin v103.percona.27
+git tag v103.percona.28
+git push origin v103.percona.28
 ```
 
 ## Build
