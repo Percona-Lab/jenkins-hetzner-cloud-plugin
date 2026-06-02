@@ -517,7 +517,7 @@ Drop SYSTEM_READ permission gate on `/hetzner-prometheus` for the push-model rol
 - Javadoc updated to reflect the localhost-only contract and reference ADR 0013 / PS-10997 Phase 2.
 
 ### Context
-- Companion repo: `nogueiraanderson/percona-ci-platform` (alloy-gateway addon).
+- Companion repo: `Percona/percona-cd-platform` (alloy-gateway addon).
 - Supersedes the prior plan that ran a `prom-scraper-svc` Jenkins user with API-token basic auth for in-cluster Prometheus to scrape this endpoint over public DNS.
 
 ## v103.percona.9 (2026-05-07)
