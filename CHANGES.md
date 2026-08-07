@@ -9,7 +9,7 @@ It is the auditable companion to the root `NOTICE` and the per-file
 
 - Upstream base: dNation hetzner-cloud-plugin tag `103.v843b_12130985`
   ("Make node name prefix configurable").
-- Percona fork: `103.percona.26`.
+- Percona fork: `103.percona.29`.
 
 Legend: A = added by Percona, M = modified from upstream.
 
@@ -48,6 +48,7 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/OrphanedNodesCleaner.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/primaryip/AbstractByLabelSelector.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/shutdown/BeforeHourWrapsPolicy.java
+- src/main/java/cloud/dnation/jenkins/plugins/hetzner/shutdown/IdlePeriodPolicy.java
 
 ## Added tests (src/test)
 
@@ -68,6 +69,7 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/NodeCallableRetryTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/NodeCallableTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/OrphanedNodesCleanerTest.java
+- src/test/java/cloud/dnation/jenkins/plugins/hetzner/shutdown/ShutdownPolicyRetentionTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/RateLimitInterceptorTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/RetryInterceptorTest.java
 

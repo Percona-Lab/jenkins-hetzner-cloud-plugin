@@ -74,6 +74,29 @@ public final class HetznerMetricProvider {
             .register();
 
     /**
+     * Agents whose baked-in retention strategy is null (core treats null as
+     * {@code RetentionStrategy.Always}, so the worker is never reaped and
+     * lives forever). Non-zero means the retention-loss deserialization bug
+     * is back or a new construction path skipped the strategy; alert on it.
+     */
+    public static final Gauge AGENTS_RETENTION_MISSING = Gauge.build()
+            .name("hetzner_agents_retention_missing")
+            .help("Agents with a null retention strategy (immortal, never reaped); should be 0")
+            .labelNames("cloud")
+            .register();
+
+    /**
+     * Online idle agents that stayed up for more than twice their idle
+     * shutdown period. Catches every reap-failure mode (missing retention,
+     * dead ComputerRetentionWork timer, throwing strategy) by its symptom.
+     */
+    public static final Gauge AGENTS_IDLE_OVERDUE = Gauge.build()
+            .name("hetzner_agents_idle_overdue")
+            .help("Online idle agents idle for more than twice their idle-shutdown period")
+            .labelNames("cloud")
+            .register();
+
+    /**
      * CRW-death canary. {@code pendingProvisions.getAndDecrement()} returning
      * {@code <= 0} means the increment/decrement contract was violated -- the
      * exact failure mode that historically killed the

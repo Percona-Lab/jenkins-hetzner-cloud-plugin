@@ -2,6 +2,42 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.29 (2026-08-07)
+
+Fixes shutdown-policy retention loss on deserialization, which produced
+immortal workers, and adds two reap-health gauges so the failure mode is
+alertable instead of silent.
+
+Root cause: `AbstractShutdownPolicy.retentionStrategy` is `transient` and only
+assigned in the constructor, which XStream bypasses. A `HetznerCloud` loaded
+from the controller's persisted `config.xml` therefore carries
+`IdlePeriodPolicy` instances with `idleMinutes` intact but a null wrapped
+`CloudRetentionStrategy`. `HetznerServerAgent` bakes
+`template.getShutdownPolicy().getRetentionStrategy()` into the node at
+creation, and core `Slave.getRetentionStrategy()` maps a null field to
+`RetentionStrategy.Always`, so every agent provisioned or rehydrated from a
+deserialized template is never reaped. Observed fleet-wide on 2026-08-07:
+cloud.cd 16/16 agents immortal (oldest 58 days, disks at 100% from
+accumulated buildx debris), ps80.cd 13/13, pxc.cd 2/2. This is the
+deserialization bug class from v103.percona.1/.25/.27 surfacing in the
+shutdown path.
+
+Fix: `IdlePeriodPolicy.readResolve()` rebuilds the instance so the transient
+strategy is restored after deserialization, and the `HetznerServerAgent`
+constructor falls back to the default idle policy when a template still hands
+it a null strategy (belt and braces; `BeforeHourWrapsPolicy` already returns
+its strategy singleton from the getter and is immune). Existing immortal
+agents are not fixed by upgrading: cure them in place via Script Console
+(`setRetentionStrategy(new CloudRetentionStrategy(idleMinutes))`) or recycle
+them.
+
+Metrics: `hetzner_agents_retention_missing` (agents whose effective retention
+is `Always`; should be constant 0) and `hetzner_agents_idle_overdue` (online
+idle agents past twice their idle-shutdown period; catches any reap-failure
+mode by symptom, including a dead ComputerRetentionWork timer). Both are
+per-cloud gauges refreshed by the existing 1-minute
+`HetznerMetricsRefresher` pass.
+
 ## v103.percona.28 (2026-06-01)
 
 Resolves SSH credentials by the `SSHUserPrivateKey` interface instead of the
