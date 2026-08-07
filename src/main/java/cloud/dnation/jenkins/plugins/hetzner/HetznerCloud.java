@@ -281,6 +281,16 @@ public class HetznerCloud extends AbstractCloudImpl {
             log.warn("Refresh of hetzner_running_servers failed for cloud '{}': {}",
                     name, e.getMessage());
         }
+        refreshLocalMetrics();
+    }
+
+    /**
+     * Refresh the gauges that need no Hetzner API call. The metrics
+     * refresher calls this even while the token is rate-limited, so the
+     * reap-health gauges stay live through a 429 window instead of
+     * freezing at their pre-window values.
+     */
+    public void refreshLocalMetrics() {
         // PROVISIONING_PENDING tracks an in-memory AtomicInteger, so it
         // does not drift from the network; re-emit defensively in case a
         // provisioning code path forgot to update the gauge after mutating
@@ -289,8 +299,7 @@ public class HetznerCloud extends AbstractCloudImpl {
         try {
             refreshAgentRetentionMetrics();
         } catch (Exception e) {
-            log.warn("Refresh of agent retention metrics failed for cloud '{}': {}",
-                    name, e.getMessage());
+            log.warn("Refresh of agent retention metrics failed for cloud '{}'", name, e);
         }
     }
 
@@ -319,8 +328,12 @@ public class HetznerCloud extends AbstractCloudImpl {
             if (computer == null || computer.isOffline() || !computer.isIdle()) {
                 continue;
             }
+            final long thresholdMinutes = idleOverdueThresholdMinutes(agent);
+            if (thresholdMinutes < 0) {
+                continue;
+            }
             final long idleMillis = System.currentTimeMillis() - computer.getIdleStartMilliseconds();
-            if (idleMillis > TimeUnit.MINUTES.toMillis(idleOverdueThresholdMinutes(agent))) {
+            if (idleMillis > TimeUnit.MINUTES.toMillis(thresholdMinutes)) {
                 idleOverdue++;
             }
         }
@@ -330,16 +343,16 @@ public class HetznerCloud extends AbstractCloudImpl {
 
     /**
      * Overdue threshold: twice the template's idle-shutdown period, floored
-     * at 20 minutes so short idle policies do not flap the gauge. Templates
-     * without an idle-period policy (hour-wrap) use the default idle period.
+     * at 20 minutes so short idle policies do not flap the gauge. Returns -1
+     * for templates without an idle-period policy: an hour-wrap agent may
+     * legitimately idle until the end of its billing hour, so it has no
+     * meaningful overdue point and is excluded rather than false-alarmed.
      */
-    private static long idleOverdueThresholdMinutes(HetznerServerAgent agent) {
-        int idleMinutes = HetznerConstants.DEFAULT_SHUTDOWN_POLICY.getIdleMinutes();
-        final HetznerServerTemplate template = agent.getTemplate();
-        if (template != null && template.getShutdownPolicy() instanceof IdlePeriodPolicy idlePolicy) {
-            idleMinutes = idlePolicy.getIdleMinutes();
+    static long idleOverdueThresholdMinutes(HetznerServerAgent agent) {
+        if (!(agent.getTemplate().getShutdownPolicy() instanceof IdlePeriodPolicy idlePolicy)) {
+            return -1L;
         }
-        return Math.max(2L * idleMinutes, 20L);
+        return Math.max(2L * idlePolicy.getIdleMinutes(), 20L);
     }
 
     /**

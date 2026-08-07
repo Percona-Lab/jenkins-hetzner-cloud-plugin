@@ -74,14 +74,18 @@ public final class HetznerMetricProvider {
             .register();
 
     /**
-     * Agents whose baked-in retention strategy is null (core treats null as
-     * {@code RetentionStrategy.Always}, so the worker is never reaped and
-     * lives forever). Non-zero means the retention-loss deserialization bug
-     * is back or a new construction path skipped the strategy; alert on it.
+     * Agents whose EFFECTIVE retention strategy is
+     * {@code RetentionStrategy.Always}: nothing ever reaps them, so they
+     * live forever. A null baked-in strategy is unobservable through the
+     * core {@code Slave} getter (it maps null to Always), so this counts
+     * the observable degenerate state, whatever produced it. The agent
+     * constructor's fallback logs a warning when it converts a null
+     * strategy, covering the construction-path regression this gauge
+     * cannot see. Should be a constant 0; alert on non-zero.
      */
     public static final Gauge AGENTS_RETENTION_MISSING = Gauge.build()
             .name("hetzner_agents_retention_missing")
-            .help("Agents with a null retention strategy (immortal, never reaped); should be 0")
+            .help("Agents whose effective retention strategy is Always (immortal, never reaped); should be 0")
             .labelNames("cloud")
             .register();
 

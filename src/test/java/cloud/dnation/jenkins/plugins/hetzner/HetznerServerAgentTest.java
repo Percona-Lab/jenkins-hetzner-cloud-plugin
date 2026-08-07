@@ -10,6 +10,7 @@
 package cloud.dnation.jenkins.plugins.hetzner;
 
 import cloud.dnation.jenkins.plugins.hetzner.shutdown.AbstractShutdownPolicy;
+import cloud.dnation.jenkins.plugins.hetzner.shutdown.BeforeHourWrapsPolicy;
 import cloud.dnation.jenkins.plugins.hetzner.shutdown.IdlePeriodPolicy;
 import hudson.model.TaskListener;
 import hudson.slaves.CloudRetentionStrategy;
@@ -100,6 +101,33 @@ class HetznerServerAgentTest {
 
         assertInstanceOf(CloudRetentionStrategy.class, agent.getRetentionStrategy(),
                 "null strategy must fall back to the default idle policy, not RetentionStrategy.Always");
+    }
+
+    @Test
+    void idleOverdueThresholdSkipsHourWrapAgents() throws Exception {
+        HetznerServerTemplate hourWrap = new HetznerServerTemplate(
+                "hw-template", "hw-label", "test-image", "fsn1", "cx31");
+        hourWrap.setShutdownPolicy(new BeforeHourWrapsPolicy());
+        HetznerCloud hwCloud = new HetznerCloud(
+                "test-cloud", "mock-credentials", "10",
+                Collections.singletonList(hourWrap));
+        HetznerServerAgent hwAgent = new HetznerServerAgent(
+                new ProvisioningActivity.Id("test-cloud", "hw-template", "hw-node"),
+                "hw-node", "/tmp/jenkins", new hudson.slaves.JNLPLauncher(), hwCloud, hourWrap);
+        assertEquals(-1L, HetznerCloud.idleOverdueThresholdMinutes(hwAgent),
+                "hour-wrap agents have no idle-shutdown period and must be excluded");
+
+        HetznerServerTemplate idle = new HetznerServerTemplate(
+                "idle-template", "idle-label", "test-image", "fsn1", "cx31");
+        idle.setShutdownPolicy(new IdlePeriodPolicy(7));
+        HetznerCloud idleCloud = new HetznerCloud(
+                "test-cloud-2", "mock-credentials", "10",
+                Collections.singletonList(idle));
+        HetznerServerAgent idleAgent = new HetznerServerAgent(
+                new ProvisioningActivity.Id("test-cloud-2", "idle-template", "idle-node"),
+                "idle-node", "/tmp/jenkins", new hudson.slaves.JNLPLauncher(), idleCloud, idle);
+        assertEquals(20L, HetznerCloud.idleOverdueThresholdMinutes(idleAgent),
+                "2x7 idle minutes floors at 20");
     }
 
     // -- _terminate: must never throw (kills CRW timer) --

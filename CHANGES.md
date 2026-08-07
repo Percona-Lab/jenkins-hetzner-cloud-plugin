@@ -9,7 +9,7 @@ It is the auditable companion to the root `NOTICE` and the per-file
 
 - Upstream base: dNation hetzner-cloud-plugin tag `103.v843b_12130985`
   ("Make node name prefix configurable").
-- Percona fork: `103.percona.29`.
+- Percona fork: `103.percona.30`.
 
 Legend: A = added by Percona, M = modified from upstream.
 
