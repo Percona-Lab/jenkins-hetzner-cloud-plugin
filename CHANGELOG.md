@@ -2,6 +2,34 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.30 (2026-08-07)
+
+Hardens the v103.percona.29 retention fix based on a multi-model adversarial
+review before the fleet rollout (v29 was released but never deployed; v30 is
+the version that rolls out).
+
+- `hetzner_agents_idle_overdue` excludes hour-wrap agents. Their policy has
+  no idle-shutdown period (a worker may legitimately idle until the end of
+  its billing hour), so the previous 20-minute threshold would have emitted
+  up to ~35 minutes of false reap-failure signal per hour for every idle
+  hour-wrap agent. Idle-period agents keep the twice-idleMinutes threshold,
+  floored at 20 minutes; covered by a new threshold unit test.
+- `IdlePeriodPolicy` is now `final` and its `readResolve()` is `private`.
+  The protected hook on an extensible class was the classic
+  readResolve-subclassing trap: XStream would invoke the inherited parent
+  hook on any future subclass and silently replace it with a plain
+  `IdlePeriodPolicy`, losing subtype state.
+- The reap-health gauge docs now state the observable semantics (effective
+  strategy is Always) instead of the unobservable null field, and the
+  refresh failure handler logs the full stack trace instead of a
+  possibly-empty exception message.
+- The metrics refresher no longer skips the retention gauges while the API
+  token is rate-limited. `HetznerCloud.refreshLocalMetrics()` (pending
+  provisions + reap-health gauges, no API calls) now runs every cycle;
+  only the API-backed `hetzner_running_servers` refresh is gated. Before
+  this, a 429 window froze the reap-health gauges at their pre-window
+  values, hiding a newly immortal agent or pinning a stale alert.
+
 ## v103.percona.29 (2026-08-07)
 
 Fixes shutdown-policy retention loss on deserialization, which produced

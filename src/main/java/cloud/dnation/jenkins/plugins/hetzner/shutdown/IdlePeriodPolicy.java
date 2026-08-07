@@ -27,7 +27,7 @@ import org.kohsuke.stapler.DataBoundConstructor;
 
 import java.io.Serial;
 
-public class IdlePeriodPolicy extends AbstractShutdownPolicy {
+public final class IdlePeriodPolicy extends AbstractShutdownPolicy {
     @Getter
     private final int idleMinutes;
 
@@ -44,10 +44,11 @@ public class IdlePeriodPolicy extends AbstractShutdownPolicy {
      * such a template bakes that null in, and core {@code Slave} treats a
      * null retention strategy as {@code RetentionStrategy.Always}: the
      * worker is never reaped. Rebuilding the instance restores the wrapped
-     * {@link CloudRetentionStrategy}.
+     * {@link CloudRetentionStrategy}. Private hook on a final class, so no
+     * subclass can inherit it and be silently replaced by the parent type.
      */
     @Serial
-    protected Object readResolve() {
+    private Object readResolve() {
         return new IdlePeriodPolicy(idleMinutes);
     }
 

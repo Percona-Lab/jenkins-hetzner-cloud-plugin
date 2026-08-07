@@ -75,8 +75,9 @@ public class HetznerMetricsRefresher extends PeriodicWork {
 
     private static void refreshCloud(HetznerCloud cloud) {
         if (HetznerApiClient.forCredentials(cloud.getCredentialsId()).isRateLimited()) {
-            log.debug("Token rate-limited for cloud '{}', skipping metrics refresh this cycle",
+            log.debug("Token rate-limited for cloud '{}', refreshing only local gauges this cycle",
                     cloud.name);
+            cloud.refreshLocalMetrics();
             return;
         }
         cloud.refreshMetrics();
