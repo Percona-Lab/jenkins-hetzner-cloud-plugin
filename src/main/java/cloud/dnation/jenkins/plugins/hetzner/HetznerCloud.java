@@ -17,6 +17,7 @@
 package cloud.dnation.jenkins.plugins.hetzner;
 
 import cloud.dnation.jenkins.plugins.hetzner.metrics.HetznerMetricProvider;
+import cloud.dnation.jenkins.plugins.hetzner.shutdown.IdlePeriodPolicy;
 import com.cloudbees.plugins.credentials.CredentialsMatchers;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
@@ -33,9 +34,11 @@ import hudson.security.ACL;
 import hudson.slaves.AbstractCloudImpl;
 import hudson.slaves.Cloud;
 import hudson.slaves.NodeProvisioner.PlannedNode;
+import hudson.slaves.RetentionStrategy;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import jenkins.model.Jenkins;
 import lombok.Getter;
 import lombok.SneakyThrows;
@@ -283,6 +286,60 @@ public class HetznerCloud extends AbstractCloudImpl {
         // provisioning code path forgot to update the gauge after mutating
         // the counter.
         HetznerMetricProvider.PROVISIONING_PENDING.labels(name).set(ensurePendingProvisions().get());
+        try {
+            refreshAgentRetentionMetrics();
+        } catch (Exception e) {
+            log.warn("Refresh of agent retention metrics failed for cloud '{}': {}",
+                    name, e.getMessage());
+        }
+    }
+
+    /**
+     * Emit the reap-health gauges for this cloud's agents.
+     * <p>
+     * An agent whose effective retention strategy is {@code Always} is
+     * immortal: nothing ever terminates it (core {@code Slave} also maps a
+     * null strategy field to {@code Always}, which is how the transient
+     * {@code AbstractShutdownPolicy.retentionStrategy} loss surfaced). The
+     * idle-overdue gauge catches the same failure by symptom, plus any other
+     * reap-failure mode (dead ComputerRetentionWork timer, throwing
+     * strategy): an online idle agent past twice its idle-shutdown period.
+     */
+    private void refreshAgentRetentionMetrics() {
+        int retentionMissing = 0;
+        int idleOverdue = 0;
+        for (final Node node : Jenkins.get().getNodes()) {
+            if (!(node instanceof HetznerServerAgent agent) || !name.equals(agent.getCloudName())) {
+                continue;
+            }
+            if (agent.getRetentionStrategy() instanceof RetentionStrategy.Always) {
+                retentionMissing++;
+            }
+            final Computer computer = agent.toComputer();
+            if (computer == null || computer.isOffline() || !computer.isIdle()) {
+                continue;
+            }
+            final long idleMillis = System.currentTimeMillis() - computer.getIdleStartMilliseconds();
+            if (idleMillis > TimeUnit.MINUTES.toMillis(idleOverdueThresholdMinutes(agent))) {
+                idleOverdue++;
+            }
+        }
+        HetznerMetricProvider.AGENTS_RETENTION_MISSING.labels(name).set(retentionMissing);
+        HetznerMetricProvider.AGENTS_IDLE_OVERDUE.labels(name).set(idleOverdue);
+    }
+
+    /**
+     * Overdue threshold: twice the template's idle-shutdown period, floored
+     * at 20 minutes so short idle policies do not flap the gauge. Templates
+     * without an idle-period policy (hour-wrap) use the default idle period.
+     */
+    private static long idleOverdueThresholdMinutes(HetznerServerAgent agent) {
+        int idleMinutes = HetznerConstants.DEFAULT_SHUTDOWN_POLICY.getIdleMinutes();
+        final HetznerServerTemplate template = agent.getTemplate();
+        if (template != null && template.getShutdownPolicy() instanceof IdlePeriodPolicy idlePolicy) {
+            idleMinutes = idlePolicy.getIdleMinutes();
+        }
+        return Math.max(2L * idleMinutes, 20L);
     }
 
     /**

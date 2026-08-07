@@ -26,6 +26,7 @@ import hudson.slaves.AbstractCloudComputer;
 import hudson.slaves.AbstractCloudSlave;
 import hudson.slaves.ComputerLauncher;
 import hudson.slaves.EphemeralNode;
+import hudson.slaves.RetentionStrategy;
 import java.io.Serial;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -73,8 +74,28 @@ public class HetznerServerAgent extends AbstractCloudSlave implements EphemeralN
         setLabelString(template.getLabelStr());
         setNumExecutors(template.getNumExecutors());
         setMode(template.getMode() == null ? Mode.EXCLUSIVE : template.getMode());
-        setRetentionStrategy(template.getShutdownPolicy().getRetentionStrategy());
+        setRetentionStrategy(retentionStrategyOrDefault(template));
         readResolve();
+    }
+
+    /**
+     * A template whose shutdown policy was deserialized without
+     * {@code readResolve} support carries a null retention strategy; baking
+     * that null into the agent makes core {@code Slave} fall back to
+     * {@code RetentionStrategy.Always} and the worker is never reaped.
+     * Fall back to the default idle policy instead.
+     */
+    @SuppressWarnings("rawtypes")
+    private static RetentionStrategy<AbstractCloudComputer> retentionStrategyOrDefault(
+            HetznerServerTemplate template) {
+        final RetentionStrategy<AbstractCloudComputer> strategy =
+                template.getShutdownPolicy().getRetentionStrategy();
+        if (strategy != null) {
+            return strategy;
+        }
+        log.warn("Template '{}' has no retention strategy after deserialization; "
+                + "falling back to the default idle policy", template.getName());
+        return HetznerConstants.DEFAULT_SHUTDOWN_POLICY.getRetentionStrategy();
     }
 
     @SuppressWarnings("rawtypes")

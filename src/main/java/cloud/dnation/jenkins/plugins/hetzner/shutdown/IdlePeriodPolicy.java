@@ -12,6 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ * Modified by Percona LLC in 2026 (retention/failover/metrics hardening; see NOTICE).
  */
 package cloud.dnation.jenkins.plugins.hetzner.shutdown;
 
@@ -24,6 +25,8 @@ import lombok.Getter;
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.DataBoundConstructor;
 
+import java.io.Serial;
+
 public class IdlePeriodPolicy extends AbstractShutdownPolicy {
     @Getter
     private final int idleMinutes;
@@ -32,6 +35,20 @@ public class IdlePeriodPolicy extends AbstractShutdownPolicy {
     public IdlePeriodPolicy(int idleMinutes) {
         super(new CloudRetentionStrategy(idleMinutes));
         this.idleMinutes = idleMinutes;
+    }
+
+    /**
+     * XStream skips the constructor, so a policy loaded from the persisted
+     * cloud configuration has a null {@code retentionStrategy} (the field is
+     * transient in {@link AbstractShutdownPolicy}). An agent created from
+     * such a template bakes that null in, and core {@code Slave} treats a
+     * null retention strategy as {@code RetentionStrategy.Always}: the
+     * worker is never reaped. Rebuilding the instance restores the wrapped
+     * {@link CloudRetentionStrategy}.
+     */
+    @Serial
+    protected Object readResolve() {
+        return new IdlePeriodPolicy(idleMinutes);
     }
 
     @Extension

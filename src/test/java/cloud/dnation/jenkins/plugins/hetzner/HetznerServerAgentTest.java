@@ -9,7 +9,10 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
+import cloud.dnation.jenkins.plugins.hetzner.shutdown.AbstractShutdownPolicy;
+import cloud.dnation.jenkins.plugins.hetzner.shutdown.IdlePeriodPolicy;
 import hudson.model.TaskListener;
+import hudson.slaves.CloudRetentionStrategy;
 import org.jenkinsci.plugins.cloudstats.ProvisioningActivity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +25,7 @@ import java.util.Collections;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
@@ -68,6 +72,34 @@ class HetznerServerAgentTest {
         Field field = obj.getClass().getDeclaredField(fieldName);
         field.setAccessible(true);
         field.set(obj, null);
+    }
+
+    // -- retention: a strategy-less policy must not produce an immortal agent --
+
+    @Test
+    void agentFallsBackToDefaultRetentionWhenPolicyLostItsStrategy() throws Exception {
+        HetznerServerTemplate template = new HetznerServerTemplate(
+                "test-template", "test-label", "test-image", "fsn1", "cx31");
+        IdlePeriodPolicy crippled = new IdlePeriodPolicy(10);
+        Field strategy = AbstractShutdownPolicy.class.getDeclaredField("retentionStrategy");
+        strategy.setAccessible(true);
+        strategy.set(crippled, null);
+        template.setShutdownPolicy(crippled);
+        HetznerCloud cloud = new HetznerCloud(
+                "test-cloud", "mock-credentials", "10",
+                Collections.singletonList(template));
+
+        HetznerServerAgent agent = new HetznerServerAgent(
+                new ProvisioningActivity.Id("test-cloud", "test-template", "test-node"),
+                "test-node",
+                "/tmp/jenkins",
+                new hudson.slaves.JNLPLauncher(),
+                cloud,
+                template
+        );
+
+        assertInstanceOf(CloudRetentionStrategy.class, agent.getRetentionStrategy(),
+                "null strategy must fall back to the default idle policy, not RetentionStrategy.Always");
     }
 
     // -- _terminate: must never throw (kills CRW timer) --
