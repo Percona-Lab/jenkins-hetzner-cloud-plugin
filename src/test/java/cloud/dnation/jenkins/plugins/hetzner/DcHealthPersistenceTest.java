@@ -255,4 +255,66 @@ class DcHealthPersistenceTest {
         assertFalse(xml.exists(),
                 "load() must not create the file as a side effect");
     }
+
+    /**
+     * v103.percona.31: a persisted HALF_OPEN older than the stale TTL loads
+     * as CLOSED. The probe lease is transient, so a reloaded HALF_OPEN could
+     * never be probed and pinned the arm64 routing flag on the AWS fallback
+     * across every restart (ps80, 2026-06-09 to 2026-09-17).
+     */
+    @Test
+    void ttl_closesStaleHalfOpenOnLoad() throws Exception {
+        persistHalfOpen("fsn1", "arm64", 40L * 60 * 1000, 2943);
+
+        DcHealthTracker.resetAll();
+        DcHealthTracker.load();
+
+        DcCircuitBreaker loaded = DcHealthTracker.getBreaker("fsn1", "arm64");
+        assertEquals(DcCircuitBreaker.State.CLOSED, loaded.getState(), "stale HALF_OPEN should load as CLOSED");
+        assertEquals(0, loaded.getConsecutiveFailures());
+        assertTrue(loaded.isProbeable());
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("fsn1", "arm64").get(), 0.0001);
+        assertEquals(1.0, HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("fsn1", "arm64").get(),
+                0.0001);
+    }
+
+    /**
+     * v103.percona.31: a persisted HALF_OPEN younger than the TTL keeps its
+     * state but must come back probeable. Without a re-armed lease the
+     * loaded breaker answered isProbeable()=false until something else
+     * closed it, a second way to pin a DC out of rotation.
+     */
+    @Test
+    void freshHalfOpenLoadsProbeable() throws Exception {
+        persistHalfOpen("hel1", "arm64", 6L * 60 * 1000, 2);
+
+        DcHealthTracker.resetAll();
+        DcHealthTracker.load();
+
+        DcCircuitBreaker loaded = DcHealthTracker.getBreaker("hel1", "arm64");
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, loaded.getState());
+        assertTrue(loaded.isProbeable(), "reloaded HALF_OPEN must carry a probe lease");
+        assertTrue(loaded.tryAcquireProbe());
+        assertFalse(loaded.tryAcquireProbe(), "single-probe lease");
+        assertEquals(0.0, HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("hel1", "arm64").get(),
+                0.0001);
+    }
+
+    /** Write hetzner-dc-health.xml holding one HALF_OPEN breaker that opened {@code openedAgoMs} ago. */
+    private void persistHalfOpen(String location, String arch, long openedAgoMs, int failures) throws Exception {
+        DcCircuitBreaker breaker = DcHealthTracker.getBreaker(location, arch);
+        java.lang.reflect.Field stateField = DcCircuitBreaker.class.getDeclaredField("state");
+        stateField.setAccessible(true);
+        stateField.set(breaker, DcCircuitBreaker.State.HALF_OPEN);
+        java.lang.reflect.Field openedAt = DcCircuitBreaker.class.getDeclaredField("openedAt");
+        openedAt.setAccessible(true);
+        openedAt.set(breaker, System.currentTimeMillis() - openedAgoMs);
+        java.lang.reflect.Field consecutive = DcCircuitBreaker.class.getDeclaredField("consecutiveFailures");
+        consecutive.setAccessible(true);
+        consecutive.set(breaker, failures);
+
+        File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
+        new XmlFile(Jenkins.XSTREAM2, xml).write(new DcHealthTracker.Store(DcHealthTracker.getAllBreakers()));
+        assertTrue(xml.exists() && xml.length() > 0);
+    }
 }

@@ -429,6 +429,21 @@ public final class HetznerMetricProvider {
             .register();
 
     /**
+     * Breakers closed from {@code HALF_OPEN} because no probe outcome was
+     * recorded within the stale-HALF_OPEN TTL, either on load or by the
+     * one-minute refresher sweep. A HALF_OPEN breaker only closes through
+     * a probe, and the probe only happens when a provision reaches the DC.
+     * When the routing layer diverts all traffic away on the unhealthy
+     * flag, the probe never comes (ps80 arm64, 2026-06-09 to 2026-09-17).
+     * v103.percona.31.
+     */
+    public static final Counter DC_HEALTH_STALE_HALF_OPEN_CLOSES = Counter.build()
+            .name("hetzner_dc_health_stale_half_open_closes_total")
+            .help("HALF_OPEN DC breakers closed because no probe outcome arrived within the stale TTL")
+            .labelNames("location", "arch")
+            .register();
+
+    /**
      * Pre-v25 location-only breaker keys migrated into per-arch breakers
      * on first v25 load. Increment fires once per (location, arch) clone
      * inside {@code DcHealthTracker.load()}. Sum over all labels equals
@@ -948,6 +963,7 @@ public final class HetznerMetricProvider {
         PROVISION_LEAK_DESTROY_FAILURES.clear();
         DC_BREAKER_STATE.clear();
         DC_BREAKER_CONSECUTIVE_FAILURES.clear();
+        DC_HEALTH_STALE_HALF_OPEN_CLOSES.clear();
         DC_BREAKER_TRANSITIONS.clear();
         DC_FAILOVER.clear();
         DC_HEALTH_LOADED_BREAKERS.clear();

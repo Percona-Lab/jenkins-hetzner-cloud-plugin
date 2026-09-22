@@ -58,6 +58,11 @@ public class DcHealthTracker {
     // iteration over BREAKERS does not need to parse the key.
     private static final ConcurrentHashMap<String, DcCircuitBreaker> BREAKERS = new ConcurrentHashMap<>();
     private static final long STALE_OPEN_TTL_MS = 30 * 60 * 1000L;
+    // v103.percona.31: a HALF_OPEN breaker with no probe outcome for this long
+    // is closed by the refresher sweep and on load. Same 30 minutes as the
+    // stale-OPEN TTL, so no breaker state outlives half an hour without a
+    // real provisioning outcome behind it.
+    private static final long STALE_HALF_OPEN_TTL_MS = STALE_OPEN_TTL_MS;
     private static final AtomicBoolean SAVE_SCHEDULED = new AtomicBoolean(false);
 
     // Composite key delimiter for "<location>:<arch>". Hetzner location
@@ -304,6 +309,29 @@ public class DcHealthTracker {
     }
 
     /**
+     * v103.percona.31: close every HALF_OPEN breaker that has waited longer
+     * than {@link #STALE_HALF_OPEN_TTL_MS} for a probe outcome. Called once
+     * a minute from {@link HetznerMetricsRefresher}, so the unstick does not
+     * depend on any provisioning traffic reaching Hetzner. Persists when
+     * anything changed so the CLOSED state survives a restart.
+     *
+     * @return number of breakers closed by this sweep
+     */
+    static int closeStaleHalfOpen() {
+        long now = System.currentTimeMillis();
+        int closed = 0;
+        for (DcCircuitBreaker breaker : BREAKERS.values()) {
+            if (breaker.closeIfStaleHalfOpen(now, STALE_HALF_OPEN_TTL_MS, "by refresh tick")) {
+                closed++;
+            }
+        }
+        if (closed > 0) {
+            save();
+        }
+        return closed;
+    }
+
+    /**
      * Get a snapshot of all tracked breakers. For observability/testing.
      */
     static ConcurrentHashMap<String, DcCircuitBreaker> getAllBreakers() {
@@ -311,10 +339,21 @@ public class DcHealthTracker {
     }
 
     /**
-     * Reset all circuit breakers. For testing only.
+     * Reset all circuit breakers. Used by tests (to clear in-memory state
+     * while keeping the on-disk file, simulating a restart) and by the
+     * operator {@code jenkins hetzner reset} path via Script Console
+     * reflection. Does not persist.
+     *
+     * <p>v103.percona.31: also reports every dropped breaker as CLOSED on
+     * the gauges and zeroes the loaded-breakers gauge. Clearing the registry
+     * never cleared the per-label gauge series, so a health probe reading
+     * the metrics text still saw the pre-reset HALF_OPEN after a reset
+     * (2026-09-17).
      */
     static void resetAll() {
+        BREAKERS.values().forEach(DcCircuitBreaker::clearGauges);
         BREAKERS.clear();
+        HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.set(0);
     }
 
     /**

@@ -182,6 +182,48 @@ class DcCircuitBreaker {
     }
 
     /**
+     * v103.percona.31: close a HALF_OPEN breaker that has recorded no probe
+     * outcome for {@code staleTtlMs}. A HALF_OPEN breaker only leaves that
+     * state through a recorded outcome, and the probe only happens when a
+     * provision request reaches this DC. When the routing layer diverts all
+     * traffic away from Hetzner on the unhealthy flag derived from this
+     * breaker's gauge, no probe ever arrives and the breaker stays HALF_OPEN
+     * for good (ps80 arm64, 2026-06-09 to 2026-09-17). Closing
+     * optimistically lets the next real provision decide: success keeps it
+     * CLOSED, two failures reopen it.
+     *
+     * <p>Age source: the transient {@code halfOpenEnteredAt} while the JVM
+     * that entered HALF_OPEN is still running. After deserialization it is
+     * 0, so fall back to the persisted {@code openedAt} / {@code lastFailureAt}
+     * (the breaker cannot have entered HALF_OPEN before it opened). A breaker
+     * with no usable timestamp at all is treated as stale.
+     *
+     * @param trigger short label for the log line ("on load", "refresh tick")
+     * @return true if this call closed the breaker
+     */
+    synchronized boolean closeIfStaleHalfOpen(long now, long staleTtlMs, String trigger) {
+        if (state != State.HALF_OPEN) {
+            return false;
+        }
+        long since = halfOpenEnteredAt > 0 ? halfOpenEnteredAt : Math.max(openedAt, lastFailureAt);
+        if (since > 0 && now - since < staleTtlMs) {
+            return false;
+        }
+        state = State.CLOSED;
+        consecutiveFailures = 0;
+        openedAt = 0;
+        halfOpenProbeAvailable = false;
+        halfOpenEnteredAt = 0;
+        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(0);
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels(location, arch).inc();
+        log.warn("DC {} arch {} circuit breaker: HALF_OPEN -> CLOSED {} (no probe outcome for {}, "
+                + "closing so the next provision re-evaluates the DC)",
+                location, arch, trigger, since > 0 ? (now - since) + "ms" : "an unknown time");
+        recordTransition(State.HALF_OPEN, State.CLOSED);
+        return true;
+    }
+
+    /**
      * Record a successful provisioning in this DC.
      * Resets the circuit breaker to CLOSED regardless of current state.
      */
@@ -288,8 +330,31 @@ class DcCircuitBreaker {
             openedAt = 0;
             HetznerMetricProvider.DC_HEALTH_STALE_OPEN_RESETS.labels(location, arch).inc();
         }
+        if (state == State.HALF_OPEN) {
+            // v103.percona.31: the probe lease is transient, so a reloaded
+            // HALF_OPEN breaker could never be probed and pinned the arm64
+            // routing flag on the fallback across every restart. Older than
+            // the TTL: close it, the next provision re-evaluates the DC.
+            // Younger: keep the state but arm a fresh lease.
+            if (!closeIfStaleHalfOpen(now, staleOpenTtlMs, "on load")) {
+                halfOpenProbeAvailable = true;
+                halfOpenEnteredAt = now;
+            }
+        }
         HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(state.ordinal());
         HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(consecutiveFailures);
+    }
+
+    /**
+     * v103.percona.31: report this breaker as CLOSED on the gauges without a
+     * state transition. Used by {@link DcHealthTracker#resetAll()}: clearing
+     * the registry does not clear the per-label gauge series, so a health
+     * probe reading the metrics text kept seeing the pre-reset HALF_OPEN
+     * after {@code jenkins hetzner reset} (2026-09-17).
+     */
+    synchronized void clearGauges() {
+        HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(State.CLOSED.ordinal());
+        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(0);
     }
 
     /** Visible for testing. */

@@ -70,7 +70,25 @@ public class HetznerMetricsRefresher extends PeriodicWork {
     }
 
     static void doRefresh() {
+        sweepStaleBreakers();
         getHetznerClouds().forEach(HetznerMetricsRefresher::refreshCloud);
+    }
+
+    /**
+     * v103.percona.31: close HALF_OPEN DC breakers that never received their
+     * probe. Runs before the per-cloud refresh so the breaker gauges the
+     * master-side arm64 health probe reads are current in the same cycle,
+     * and isolated from it so a Hetzner API failure cannot skip the sweep.
+     */
+    static void sweepStaleBreakers() {
+        try {
+            int closed = DcHealthTracker.closeStaleHalfOpen();
+            if (closed > 0) {
+                log.warn("Closed {} stale HALF_OPEN DC breaker(s) that never received a probe", closed);
+            }
+        } catch (RuntimeException e) {
+            log.error("Stale HALF_OPEN DC breaker sweep failed", e);
+        }
     }
 
     private static void refreshCloud(HetznerCloud cloud) {
