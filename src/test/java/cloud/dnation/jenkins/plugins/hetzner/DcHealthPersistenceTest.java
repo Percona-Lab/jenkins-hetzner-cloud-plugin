@@ -37,7 +37,7 @@ class DcHealthPersistenceTest {
     @BeforeEach
     void setUp(JenkinsRule rule) {
         j = rule;
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         HetznerMetricProvider.resetForTest();
         File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
         if (xml.exists() && !xml.delete()) {
@@ -47,7 +47,7 @@ class DcHealthPersistenceTest {
 
     @AfterEach
     void tearDown() {
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
     }
 
     /**
@@ -89,7 +89,7 @@ class DcHealthPersistenceTest {
         // deserializer + afterLoad gauge restoration. JenkinsRule cannot
         // actually bounce the JVM mid-test, but DcHealthTracker.load() is
         // package-private and idempotent enough to invoke directly.
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         assertTrue(DcHealthTracker.getAllBreakers().isEmpty());
         DcHealthTracker.load();
 
@@ -133,7 +133,7 @@ class DcHealthPersistenceTest {
         // (save() coalesces, so the disk file may still be the un-mutated
         // version). Force a fresh save by toggling state.
         Thread.sleep(500);
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         // Re-trip so we definitely have a fresh file with the mutated
         // openedAt by going through the load path next.
         // (Simpler approach: write the XML directly via the same XmlFile
@@ -155,7 +155,7 @@ class DcHealthPersistenceTest {
         xf.write(store);
 
         // Load. afterLoad() should detect the stale OPEN and reset to CLOSED.
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         DcHealthTracker.load();
 
         DcCircuitBreaker loaded = DcHealthTracker.getBreaker("hel1", "amd64");
@@ -177,7 +177,7 @@ class DcHealthPersistenceTest {
     void legacyKeyMigrationProducesPerArchBreakers() throws Exception {
         // Hand-craft a pre-v25 Store: one location-only key "fsn1" -> OPEN
         // with 4 consecutive failures and a recent openedAt (NOT stale).
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         // Construct with a placeholder arch (the constructor's labels() call
         // rejects null arch). We then null out arch via reflection to mirror
         // the on-disk shape of a pre-v25 breaker, where the field did not
@@ -208,7 +208,7 @@ class DcHealthPersistenceTest {
         xf.write(store);
 
         // Now drive load() and verify the migration path fires.
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         HetznerMetricProvider.resetForTest();
         DcHealthTracker.load();
 
@@ -247,7 +247,7 @@ class DcHealthPersistenceTest {
         File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
         assertFalse(xml.exists(), "fixture should have no xml file");
 
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         DcHealthTracker.load();
 
         assertTrue(DcHealthTracker.getAllBreakers().isEmpty(),
@@ -266,7 +266,7 @@ class DcHealthPersistenceTest {
     void ttl_closesStaleHalfOpenOnLoad() throws Exception {
         persistHalfOpen("fsn1", "arm64", 40L * 60 * 1000, 2943);
 
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         DcHealthTracker.load();
 
         DcCircuitBreaker loaded = DcHealthTracker.getBreaker("fsn1", "arm64");
@@ -288,7 +288,7 @@ class DcHealthPersistenceTest {
     void freshHalfOpenLoadsProbeable() throws Exception {
         persistHalfOpen("hel1", "arm64", 6L * 60 * 1000, 2);
 
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         DcHealthTracker.load();
 
         DcCircuitBreaker loaded = DcHealthTracker.getBreaker("hel1", "arm64");
@@ -298,6 +298,60 @@ class DcHealthPersistenceTest {
         assertFalse(loaded.tryAcquireProbe(), "single-probe lease");
         assertEquals(0.0, HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("hel1", "arm64").get(),
                 0.0001);
+    }
+
+    /**
+     * v103.percona.32: the on-load close is persisted, so the next boot reads
+     * CLOSED instead of re-closing (and re-counting) the same stale entry.
+     */
+    @Test
+    void onLoadClosePersists() throws Exception {
+        persistHalfOpen("nbg1", "arm64", 40L * 60 * 1000, 7);
+        File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
+
+        DcHealthTracker.clearForTest();
+        DcHealthTracker.load();
+        assertEquals(DcCircuitBreaker.State.CLOSED, DcHealthTracker.getBreaker("nbg1", "arm64").getState());
+
+        await().atMost(10, TimeUnit.SECONDS).until(() -> stateOnDisk(xml, "nbg1:arm64") == DcCircuitBreaker.State.CLOSED);
+        assertEquals(1.0, HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("nbg1", "arm64").get(), 0.0001);
+    }
+
+    /**
+     * The refresher sweep writes the CLOSED state to disk, even when the
+     * trip's own save is still in flight (v103.percona.32: a save request
+     * landing during a write used to be dropped).
+     */
+    @Test
+    void sweepClosePersists() throws Exception {
+        DcHealthTracker.recordFailure("fsn1", "arm64");
+        DcHealthTracker.recordFailure("fsn1", "arm64");
+        DcCircuitBreaker breaker = DcHealthTracker.getBreaker("fsn1", "arm64");
+        for (String name : new String[] {"openedAt", "lastFailureAt"}) {
+            java.lang.reflect.Field field = DcCircuitBreaker.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(breaker, System.currentTimeMillis() - 31L * 60 * 1000);
+        }
+
+        assertEquals(1, DcHealthTracker.closeStaleHalfOpen());
+
+        File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
+        await().atMost(10, TimeUnit.SECONDS).until(() -> stateOnDisk(xml, "fsn1:arm64") == DcCircuitBreaker.State.CLOSED);
+    }
+
+    /** Read one breaker's state straight from the XML file, or null when absent. */
+    private static DcCircuitBreaker.State stateOnDisk(File xml, String key) throws Exception {
+        if (!xml.exists()) {
+            return null;
+        }
+        DcHealthTracker.Store store = (DcHealthTracker.Store) new XmlFile(Jenkins.XSTREAM2, xml).read();
+        DcCircuitBreaker onDisk = store.breakers.get(key);
+        if (onDisk == null) {
+            return null;
+        }
+        java.lang.reflect.Field stateField = DcCircuitBreaker.class.getDeclaredField("state");
+        stateField.setAccessible(true);
+        return (DcCircuitBreaker.State) stateField.get(onDisk);
     }
 
     /** Write hetzner-dc-health.xml holding one HALF_OPEN breaker that opened {@code openedAgoMs} ago. */

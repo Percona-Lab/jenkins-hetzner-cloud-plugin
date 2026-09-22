@@ -58,12 +58,12 @@ class DcHealthTrackerTest {
         HetznerCloudResourceManager mgr = mock(HetznerCloudResourceManager.class);
         when(HetznerCloudResourceManager.create(anyString())).thenReturn(mgr);
 
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
     }
 
     @AfterEach
     void tearDown() {
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         jenkinsMock.close();
         rsrcMgrMock.close();
     }
@@ -410,16 +410,65 @@ class DcHealthTrackerTest {
         assertEquals(0.0, HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.get(), 0.0001);
     }
 
-    /** Drive a breaker to HALF_OPEN and backdate its HALF_OPEN entry by {@code ageMs}. */
+    /**
+     * Drive a breaker to HALF_OPEN whose last failure lies {@code ageMs} beyond the
+     * reset timeout, so the persisted clock reads "HALF_OPEN for ageMs".
+     */
     private static void forceHalfOpen(DcCircuitBreaker cb, long ageMs) throws Exception {
-        cb.recordFailure();
-        cb.recordFailure();
-        java.lang.reflect.Field openedAt = DcCircuitBreaker.class.getDeclaredField("openedAt");
-        openedAt.setAccessible(true);
-        openedAt.set(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+        backdateOpen(cb, DcCircuitBreaker.resetTimeoutMs() + 1 + ageMs);
         assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
-        java.lang.reflect.Field entered = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
-        entered.setAccessible(true);
-        entered.set(cb, System.currentTimeMillis() - ageMs);
+    }
+
+    /** Trip a breaker OPEN and backdate its open and last-failure stamps by {@code agoMs}. */
+    private static void backdateOpen(DcCircuitBreaker cb, long agoMs) throws Exception {
+        cb.recordFailure();
+        cb.recordFailure();
+        for (String name : new String[] {"openedAt", "lastFailureAt"}) {
+            java.lang.reflect.Field field = DcCircuitBreaker.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(cb, System.currentTimeMillis() - agoMs);
+        }
+    }
+
+    /**
+     * v103.percona.32: nothing but provisioning traffic calls getState(), so an
+     * idle OPEN breaker used to sit OPEN forever. The sweep takes the lazy step
+     * and then applies the stale rule.
+     */
+    @Test
+    void sweepAdvancesIdleOpenAndClosesIt() throws Exception {
+        DcCircuitBreaker idle = DcHealthTracker.getBreaker("fsn1", ARM64);
+        backdateOpen(idle, 31L * 60 * 1000);
+
+        assertEquals(1, DcHealthTracker.closeStaleHalfOpen());
+        assertEquals(DcCircuitBreaker.State.CLOSED, idle.getState());
+    }
+
+    /**
+     * v103.percona.32: an outcome recorded on an instance that resetAll()
+     * already dropped must not touch the shared gauges.
+     */
+    @Test
+    void outcomeOnDroppedBreakerLeavesGaugesAlone() throws Exception {
+        DcCircuitBreaker old = DcHealthTracker.getBreaker("nbg1", ARM64);
+        DcHealthTracker.resetAll();
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("nbg1", ARM64).get(), 0.0001);
+
+        old.recordFailure();
+        old.recordFailure();
+        assertEquals(DcCircuitBreaker.State.OPEN, old.getState(), "the dropped instance keeps its own state");
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("nbg1", ARM64).get(), 0.0001);
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels("nbg1", ARM64).get(), 0.0001);
+        assertTrue(DcHealthTracker.getAllBreakers().isEmpty(), "and it is not resurrected");
+    }
+
+    /** An OPEN breaker inside its reset timeout is left alone by the sweep. */
+    @Test
+    void sweepLeavesFreshOpenAlone() throws Exception {
+        DcCircuitBreaker fresh = DcHealthTracker.getBreaker("hel1", ARM64);
+        backdateOpen(fresh, 2L * 60 * 1000);
+
+        assertEquals(0, DcHealthTracker.closeStaleHalfOpen());
+        assertEquals(DcCircuitBreaker.State.OPEN, fresh.getState());
     }
 }

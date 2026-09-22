@@ -67,6 +67,10 @@ class DcCircuitBreaker {
     // Transient: in-memory only; meaningless across JVM restart.
     private transient boolean halfOpenProbeAvailable;
     private transient long halfOpenEnteredAt;
+    // v103.percona.32: set by detach() when resetAll() drops this instance from
+    // the registry. A late outcome recorded on a dropped instance must not
+    // write the shared per-label gauges, which now belong to the replacement.
+    private transient boolean detached;
 
     DcCircuitBreaker(String location, String arch) {
         this.location = location;
@@ -74,6 +78,10 @@ class DcCircuitBreaker {
         // Initialize gauge with starting state so panels render immediately
         // instead of "no data" until the first transition.
         HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(State.CLOSED.ordinal());
+        // v103.percona.32: pre-create the closes counter child at 0 so the
+        // first increment (often on load, before the first scrape) is visible
+        // to increase() and rate().
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels(location, arch);
     }
 
     /**
@@ -82,8 +90,22 @@ class DcCircuitBreaker {
      * recordFailure open, getState lazy reset).
      */
     private void recordTransition(State from, State to) {
-        HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(to.ordinal());
+        gaugeState(to);
         HetznerMetricProvider.DC_BREAKER_TRANSITIONS.labels(location, arch, from.name(), to.name()).inc();
+    }
+
+    /** Write the state gauge unless this instance was dropped by resetAll(). */
+    private void gaugeState(State value) {
+        if (!detached) {
+            HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(value.ordinal());
+        }
+    }
+
+    /** Write the consecutive-failures gauge unless this instance was dropped by resetAll(). */
+    private void gaugeFailures(int value) {
+        if (!detached) {
+            HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(value);
+        }
     }
 
     /**
@@ -143,6 +165,10 @@ class DcCircuitBreaker {
         rearmStaleHalfOpenLeaseIfNeeded();
         if (halfOpenProbeAvailable) {
             halfOpenProbeAvailable = false;
+            // v103.percona.32: the lease TTL and the stale-close in-flight
+            // guard both measure from the hand-out, as the re-arm Javadoc
+            // already describes ("holder did not record outcome within").
+            halfOpenEnteredAt = System.currentTimeMillis();
             return true;
         }
         return false;
@@ -192,21 +218,34 @@ class DcCircuitBreaker {
      * optimistically lets the next real provision decide: success keeps it
      * CLOSED, two failures reopen it.
      *
-     * <p>Age source: the transient {@code halfOpenEnteredAt} while the JVM
-     * that entered HALF_OPEN is still running. After deserialization it is
-     * 0, so fall back to the persisted {@code openedAt} / {@code lastFailureAt}
-     * (the breaker cannot have entered HALF_OPEN before it opened). A breaker
-     * with no usable timestamp at all is treated as stale.
+     * <p>Age clock: the persisted {@code openedAt} / {@code lastFailureAt}
+     * only, so the rule reads "no recorded outcome for {@code staleTtlMs}
+     * since the breaker last opened or failed". Both fields survive a
+     * restart and neither is touched by the lease re-arm or by
+     * {@link #afterLoad}. The transient {@code halfOpenEnteredAt} is not the
+     * clock on purpose: the v26 re-arm and the on-load re-arm stamp it with
+     * {@code now}, which would restart the window every 10 minutes or on
+     * every restart (v103.percona.32, review finding on .31). A breaker with
+     * no usable timestamp at all is treated as stale.
      *
-     * @param trigger short label for the log line ("on load", "refresh tick")
+     * <p>In-flight guard (this JVM only): while the probe lease is consumed
+     * and was armed less than {@code HALF_OPEN_STALE_TTL_MS} ago, a probe
+     * outcome is still expected, so the breaker is left to it. Past that,
+     * the v26 re-arm already treats the holder as dead.
+     *
+     * @param trigger short label for the log line ("on load", "by refresh tick")
      * @return true if this call closed the breaker
      */
     synchronized boolean closeIfStaleHalfOpen(long now, long staleTtlMs, String trigger) {
         if (state != State.HALF_OPEN) {
             return false;
         }
-        long since = halfOpenEnteredAt > 0 ? halfOpenEnteredAt : Math.max(openedAt, lastFailureAt);
+        long since = Math.max(openedAt, lastFailureAt);
         if (since > 0 && now - since < staleTtlMs) {
+            return false;
+        }
+        if (!halfOpenProbeAvailable && halfOpenEnteredAt > 0
+                && now - halfOpenEnteredAt < HALF_OPEN_STALE_TTL_MS) {
             return false;
         }
         state = State.CLOSED;
@@ -214,12 +253,15 @@ class DcCircuitBreaker {
         openedAt = 0;
         halfOpenProbeAvailable = false;
         halfOpenEnteredAt = 0;
-        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(0);
+        gaugeFailures(0);
         HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels(location, arch).inc();
         log.warn("DC {} arch {} circuit breaker: HALF_OPEN -> CLOSED {} (no probe outcome for {}, "
                 + "closing so the next provision re-evaluates the DC)",
                 location, arch, trigger, since > 0 ? (now - since) + "ms" : "an unknown time");
-        recordTransition(State.HALF_OPEN, State.CLOSED);
+        // Housekeeping, not an outcome: the gauge moves, the transitions
+        // counter (plotted as recoveries) does not. The dedicated closes
+        // counter above carries the event. Same rule as the stale-OPEN reset.
+        gaugeState(State.CLOSED);
         return true;
     }
 
@@ -237,7 +279,7 @@ class DcCircuitBreaker {
                     location, arch, previous);
             recordTransition(previous, State.CLOSED);
         }
-        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(0);
+        gaugeFailures(0);
     }
 
     /**
@@ -247,7 +289,7 @@ class DcCircuitBreaker {
     synchronized void recordFailure() {
         consecutiveFailures++;
         lastFailureAt = System.currentTimeMillis();
-        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(consecutiveFailures);
+        gaugeFailures(consecutiveFailures);
         if (state == State.HALF_OPEN) {
             // Probe failed, go back to OPEN
             state = State.OPEN;
@@ -284,7 +326,7 @@ class DcCircuitBreaker {
             // window can consume it.
             halfOpenProbeAvailable = true;
             halfOpenEnteredAt = System.currentTimeMillis();
-            HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(State.HALF_OPEN.ordinal());
+            gaugeState(State.HALF_OPEN);
         }
         return state;
     }
@@ -303,6 +345,9 @@ class DcCircuitBreaker {
 
     /**
      * Post-deserialization hook called from {@link DcHealthTracker#load()}.
+     * Returns true when it changed the persisted state (stale-OPEN reset or
+     * stale-HALF_OPEN close), so the caller can persist the converged file
+     * once instead of reloading and re-closing the same entry on every boot.
      * Restores the Prometheus gauges that are not persisted (so dashboards
      * render the loaded state right after master boot) and applies the
      * stale-OPEN TTL so an old transient outage does not pin a DC out of
@@ -314,15 +359,17 @@ class DcCircuitBreaker {
      * one breaker per arch from each legacy entry and feeds the chosen
      * arch here.
      */
-    synchronized void afterLoad(String fallbackLocation, String fallbackArch,
-                                long now, long staleOpenTtlMs) {
+    synchronized boolean afterLoad(String fallbackLocation, String fallbackArch,
+                                   long now, long staleOpenTtlMs) {
         if (location == null) {
             location = fallbackLocation;
         }
         if (arch == null) {
             arch = fallbackArch;
         }
+        boolean changed = false;
         if (state == State.OPEN && now - openedAt >= staleOpenTtlMs) {
+            changed = true;
             log.info("DC {} arch {} circuit breaker: OPEN -> CLOSED on load (stale, last failure {}ms ago)",
                     location, arch, now - openedAt);
             state = State.CLOSED;
@@ -336,13 +383,16 @@ class DcCircuitBreaker {
             // routing flag on the fallback across every restart. Older than
             // the TTL: close it, the next provision re-evaluates the DC.
             // Younger: keep the state but arm a fresh lease.
-            if (!closeIfStaleHalfOpen(now, staleOpenTtlMs, "on load")) {
+            if (closeIfStaleHalfOpen(now, staleOpenTtlMs, "on load")) {
+                changed = true;
+            } else {
                 halfOpenProbeAvailable = true;
                 halfOpenEnteredAt = now;
             }
         }
-        HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(state.ordinal());
-        HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(consecutiveFailures);
+        gaugeState(state);
+        gaugeFailures(consecutiveFailures);
+        return changed;
     }
 
     /**
@@ -355,6 +405,18 @@ class DcCircuitBreaker {
     synchronized void clearGauges() {
         HetznerMetricProvider.DC_BREAKER_STATE.labels(location, arch).set(State.CLOSED.ordinal());
         HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels(location, arch).set(0);
+    }
+
+    /**
+     * v103.percona.32: called by {@link DcHealthTracker#resetAll()} on every
+     * instance it dropped. Reports CLOSED once, then silences this instance's
+     * gauge writes for good, so an outcome recorded by a thread that fetched
+     * the old instance just before the reset cannot pin the gauge at OPEN
+     * with no live breaker left to repair it.
+     */
+    synchronized void detach() {
+        clearGauges();
+        detached = true;
     }
 
     /** Visible for testing. */

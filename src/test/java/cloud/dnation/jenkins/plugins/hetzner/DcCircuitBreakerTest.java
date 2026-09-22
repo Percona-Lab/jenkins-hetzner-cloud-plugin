@@ -29,7 +29,7 @@ class DcCircuitBreakerTest {
 
     @AfterEach
     void tearDown() {
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
     }
 
     @Test
@@ -330,7 +330,8 @@ class DcCircuitBreakerTest {
         setOpenedAt(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
         assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
         long ttl = 30L * 60 * 1000;
-        setHalfOpenEnteredAt(cb, System.currentTimeMillis() - ttl - 1);
+        setOpenedAt(cb, System.currentTimeMillis() - ttl - 1);
+        setLastFailureAt(cb, System.currentTimeMillis() - ttl - 1);
         double before = HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("fsn1", "arm64").get();
 
         assertTrue(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), ttl, "test"));
@@ -374,5 +375,85 @@ class DcCircuitBreakerTest {
         java.lang.reflect.Field f = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
         f.setAccessible(true);
         f.set(cb, value);
+    }
+
+    private static void setLastFailureAt(DcCircuitBreaker cb, long value) throws Exception {
+        java.lang.reflect.Field f = DcCircuitBreaker.class.getDeclaredField("lastFailureAt");
+        f.setAccessible(true);
+        f.set(cb, value);
+    }
+
+    private static void setState(DcCircuitBreaker cb, DcCircuitBreaker.State value) throws Exception {
+        java.lang.reflect.Field f = DcCircuitBreaker.class.getDeclaredField("state");
+        f.setAccessible(true);
+        f.set(cb, value);
+    }
+
+    /** Drive a breaker to HALF_OPEN whose last failure is {@code failedAgoMs} in the past. */
+    private static DcCircuitBreaker halfOpenFailedAgo(long failedAgoMs) throws Exception {
+        DcCircuitBreaker cb = new DcCircuitBreaker("fsn1", "arm64");
+        cb.recordFailure();
+        cb.recordFailure();
+        setOpenedAt(cb, System.currentTimeMillis() - failedAgoMs);
+        setLastFailureAt(cb, System.currentTimeMillis() - failedAgoMs);
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+        return cb;
+    }
+
+    private static final long TTL_30_MIN = 30L * 60 * 1000;
+
+    /**
+     * v103.percona.32: the lease re-arm stamps the transient entry time with
+     * now every 10 minutes. The age clock must ignore it, otherwise a breaker
+     * whose lease keeps getting consumed without an outcome never looks stale.
+     */
+    @Test
+    void leaseRearmDoesNotRestartTheStaleClock() throws Exception {
+        DcCircuitBreaker cb = halfOpenFailedAgo(TTL_30_MIN + 60_000);
+        setHalfOpenEnteredAt(cb, System.currentTimeMillis()); // as if re-armed just now
+        assertTrue(cb.tryAcquireProbe(), "lease available after the re-arm");
+        setHalfOpenEnteredAt(cb, System.currentTimeMillis() - 11L * 60 * 1000); // holder silent past the lease TTL
+
+        assertTrue(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), TTL_30_MIN, "test"));
+        assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
+    }
+
+    /** A probe that consumed the lease less than 10 minutes ago still owns the outcome. */
+    @Test
+    void inFlightProbeDefersTheClose() throws Exception {
+        DcCircuitBreaker cb = halfOpenFailedAgo(TTL_30_MIN + 60_000);
+        assertTrue(cb.tryAcquireProbe(), "probe consumes the lease");
+        setHalfOpenEnteredAt(cb, System.currentTimeMillis() - 2L * 60 * 1000);
+
+        assertFalse(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), TTL_30_MIN, "test"),
+                "outcome still expected from the in-flight probe");
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        cb.recordFailure();
+        assertEquals(DcCircuitBreaker.State.OPEN, cb.getState(), "the probe's failure still reopens");
+    }
+
+    /** No usable timestamp at all (hand-edited or ancient XML) counts as stale. */
+    @Test
+    void halfOpenWithoutTimestampsClosesAsStale() throws Exception {
+        DcCircuitBreaker cb = new DcCircuitBreaker("nbg1", "arm64");
+        setState(cb, DcCircuitBreaker.State.HALF_OPEN);
+        setOpenedAt(cb, 0);
+        setLastFailureAt(cb, 0);
+
+        assertTrue(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), TTL_30_MIN, "test"));
+        assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
+    }
+
+    /** The newer of openedAt and lastFailureAt is the clock, whichever it is. */
+    @Test
+    void newerTimestampIsTheClock() throws Exception {
+        DcCircuitBreaker recentFailure = halfOpenFailedAgo(TTL_30_MIN + 60_000);
+        setLastFailureAt(recentFailure, System.currentTimeMillis() - 10L * 60 * 1000);
+        assertFalse(recentFailure.closeIfStaleHalfOpen(System.currentTimeMillis(), TTL_30_MIN, "test"));
+
+        DcCircuitBreaker recentOpen = halfOpenFailedAgo(TTL_30_MIN + 60_000);
+        setOpenedAt(recentOpen, System.currentTimeMillis() - 10L * 60 * 1000);
+        assertFalse(recentOpen.closeIfStaleHalfOpen(System.currentTimeMillis(), TTL_30_MIN, "test"));
     }
 }

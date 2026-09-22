@@ -57,13 +57,15 @@ public class DcHealthTracker {
     // breakers. The breaker object itself carries (location, arch) so
     // iteration over BREAKERS does not need to parse the key.
     private static final ConcurrentHashMap<String, DcCircuitBreaker> BREAKERS = new ConcurrentHashMap<>();
+    // One staleness TTL for both non-CLOSED states: an OPEN breaker older than
+    // this resets to CLOSED on load, and a HALF_OPEN breaker whose last open or
+    // failure is older than this closes on load and on the refresher sweep
+    // (v103.percona.31, single constant since .32).
     private static final long STALE_OPEN_TTL_MS = 30 * 60 * 1000L;
-    // v103.percona.31: a HALF_OPEN breaker with no probe outcome for this long
-    // is closed by the refresher sweep and on load. Same 30 minutes as the
-    // stale-OPEN TTL, so no breaker state outlives half an hour without a
-    // real provisioning outcome behind it.
-    private static final long STALE_HALF_OPEN_TTL_MS = STALE_OPEN_TTL_MS;
     private static final AtomicBoolean SAVE_SCHEDULED = new AtomicBoolean(false);
+    // v103.percona.32: set by every save() request, cleared by the writer before
+    // each snapshot. A request that lands during a write is no longer lost.
+    private static final AtomicBoolean SAVE_DIRTY = new AtomicBoolean(false);
 
     // Composite key delimiter for "<location>:<arch>". Hetzner location
     // codes (fsn1/hel1/nbg1/ash/...) never contain ':', so this is safe.
@@ -108,6 +110,7 @@ public class DcHealthTracker {
             Store store = (Store) xml.read();
             if (store != null && store.breakers != null) {
                 long now = System.currentTimeMillis();
+                java.util.concurrent.atomic.AtomicBoolean changed = new java.util.concurrent.atomic.AtomicBoolean(false);
                 store.breakers.forEach((rawKey, breaker) -> {
                     if (rawKey == null || breaker == null) {
                         return;
@@ -117,7 +120,9 @@ public class DcHealthTracker {
                         // v25+ composite key: load as-is.
                         String location = decoded[0];
                         String arch = decoded[1];
-                        breaker.afterLoad(location, arch, now, STALE_OPEN_TTL_MS);
+                        if (breaker.afterLoad(location, arch, now, STALE_OPEN_TTL_MS)) {
+                            changed.set(true);
+                        }
                         BREAKERS.put(rawKey, breaker);
                         return;
                     }
@@ -129,7 +134,9 @@ public class DcHealthTracker {
                     String legacyLocation = rawKey;
                     for (String arch : HetznerMetricProvider.ALWAYS_EMIT_ARCHS) {
                         DcCircuitBreaker clone = clonePreV25Breaker(breaker, legacyLocation, arch);
-                        clone.afterLoad(legacyLocation, arch, now, STALE_OPEN_TTL_MS);
+                        if (clone.afterLoad(legacyLocation, arch, now, STALE_OPEN_TTL_MS)) {
+                            changed.set(true);
+                        }
                         BREAKERS.put(encodeKey(legacyLocation, arch), clone);
                         HetznerMetricProvider.DC_HEALTH_LEGACY_KEYS_MIGRATED
                                 .labels(legacyLocation, arch).inc();
@@ -140,6 +147,12 @@ public class DcHealthTracker {
                 HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.set(BREAKERS.size());
                 log.info("Hetzner DC health state loaded from {}: {} breakers",
                         xml.getFile(), BREAKERS.size());
+                if (changed.get()) {
+                    // v103.percona.32: persist the converged state, otherwise a
+                    // master with no provisioning traffic reloads, re-closes
+                    // and re-counts the same stale entry on every boot.
+                    save();
+                }
             }
         } catch (IOException | RuntimeException e) {
             log.warn("Failed to load Hetzner DC health state from {}", xml.getFile(), e);
@@ -309,11 +322,17 @@ public class DcHealthTracker {
     }
 
     /**
-     * v103.percona.31: close every HALF_OPEN breaker that has waited longer
-     * than {@link #STALE_HALF_OPEN_TTL_MS} for a probe outcome. Called once
-     * a minute from {@link HetznerMetricsRefresher}, so the unstick does not
-     * depend on any provisioning traffic reaching Hetzner. Persists when
-     * anything changed so the CLOSED state survives a restart.
+     * v103.percona.31: close every HALF_OPEN breaker that has recorded no
+     * outcome for {@link #STALE_OPEN_TTL_MS}. Called once a minute from
+     * {@link HetznerMetricsRefresher}, so the unstick does not depend on any
+     * provisioning traffic reaching Hetzner. Persists when anything changed
+     * so the CLOSED state survives a restart.
+     *
+     * <p>v103.percona.32: the sweep first reads {@code getState()}, which
+     * takes the lazy OPEN to HALF_OPEN step once the 5 minute reset timeout
+     * has elapsed. Nothing else in the plugin calls it without provisioning
+     * traffic, so an idle OPEN breaker used to latch exactly like an idle
+     * HALF_OPEN one.
      *
      * @return number of breakers closed by this sweep
      */
@@ -321,7 +340,8 @@ public class DcHealthTracker {
         long now = System.currentTimeMillis();
         int closed = 0;
         for (DcCircuitBreaker breaker : BREAKERS.values()) {
-            if (breaker.closeIfStaleHalfOpen(now, STALE_HALF_OPEN_TTL_MS, "by refresh tick")) {
+            breaker.getState();
+            if (breaker.closeIfStaleHalfOpen(now, STALE_OPEN_TTL_MS, "by refresh tick")) {
                 closed++;
             }
         }
@@ -339,19 +359,33 @@ public class DcHealthTracker {
     }
 
     /**
-     * Reset all circuit breakers. Used by tests (to clear in-memory state
-     * while keeping the on-disk file, simulating a restart) and by the
-     * operator {@code jenkins hetzner reset} path via Script Console
-     * reflection. Does not persist.
+     * Reset all circuit breakers: the operator {@code jenkins hetzner reset}
+     * path (Script Console reflection).
      *
      * <p>v103.percona.31: also reports every dropped breaker as CLOSED on
      * the gauges and zeroes the loaded-breakers gauge. Clearing the registry
      * never cleared the per-label gauge series, so a health probe reading
      * the metrics text still saw the pre-reset HALF_OPEN after a reset
      * (2026-09-17).
+     *
+     * <p>v103.percona.32: persists the empty map, so a restart right after a
+     * reset no longer reloads the state the operator just cleared. Tests
+     * that want "clear memory, keep disk" use {@link #clearForTest()}.
      */
     static void resetAll() {
-        BREAKERS.values().forEach(DcCircuitBreaker::clearGauges);
+        List<DcCircuitBreaker> dropped = new ArrayList<>(BREAKERS.values());
+        BREAKERS.clear();
+        dropped.forEach(DcCircuitBreaker::detach);
+        HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.set(0);
+        save();
+    }
+
+    /**
+     * Test-only: drop the in-memory registry without touching the disk, the
+     * way a JVM restart would before {@link #load()} runs. Gauges are left
+     * alone so tests can assert what {@code afterLoad()} restores.
+     */
+    static void clearForTest() {
         BREAKERS.clear();
         HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.set(0);
     }
@@ -380,16 +414,25 @@ public class DcHealthTracker {
         if (j == null || j.getRootDir() == null) {
             return;
         }
+        SAVE_DIRTY.set(true);
         if (SAVE_SCHEDULED.compareAndSet(false, true)) {
             Timer.get().submit(() -> {
                 try {
-                    new Store(BREAKERS).save();
-                    HetznerMetricProvider.DC_HEALTH_SAVES.inc();
+                    do {
+                        SAVE_DIRTY.set(false);
+                        new Store(BREAKERS).save();
+                        HetznerMetricProvider.DC_HEALTH_SAVES.inc();
+                    } while (SAVE_DIRTY.get());
                 } catch (IOException | RuntimeException e) {
                     HetznerMetricProvider.DC_HEALTH_SAVE_FAILURES.inc();
                     log.warn("Failed to save Hetzner DC health state", e);
                 } finally {
                     SAVE_SCHEDULED.set(false);
+                    if (SAVE_DIRTY.get()) {
+                        // A request landed after the last write and before the
+                        // flag flip: schedule another pass instead of losing it.
+                        save();
+                    }
                 }
             });
         }
