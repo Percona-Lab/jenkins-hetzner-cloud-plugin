@@ -76,9 +76,9 @@ public class HetznerMetricsRefresher extends PeriodicWork {
 
     /**
      * v103.percona.31: close HALF_OPEN DC breakers that never received their
-     * probe. Runs before the per-cloud refresh so the breaker gauges the
-     * master-side arm64 health probe reads are current in the same cycle,
-     * and isolated from it so a Hetzner API failure cannot skip the sweep.
+     * probe (and, since .32, advance idle OPEN ones through their reset
+     * timeout). Runs before the per-cloud refresh and isolated from it, so a
+     * Hetzner API failure or a hung refresh cannot skip the sweep.
      */
     static void sweepStaleBreakers() {
         try {

@@ -2,6 +2,64 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.32 (2026-09-22)
+
+Review hardening of the v103.percona.31 self-heal, from a nine-lane adversarial
+panel (Codex, GLM, Kimi, Hy4, DeepSeek, Fable 5.1, Opus 5.5, Opus 4.8, Open
+Code Review) before the first deploy. `.31` was released but never deployed,
+`.32` is the version that rolls out.
+
+- The stale clock is the persisted `openedAt` / `lastFailureAt` only. The rule
+  now reads "no recorded outcome for 30 minutes since the breaker last opened
+  or failed". In `.31` the in-JVM clock was the transient `halfOpenEnteredAt`,
+  which the 10 minute lease re-arm and the on-load re-arm both stamp with the
+  current time, so a breaker whose lease kept being consumed without an
+  outcome, or a controller restarting more often than every 30 minutes, never
+  looked stale (five lanes converged, Codex reproduced six re-arms with zero
+  closes).
+- The sweep also advances an idle OPEN breaker through its 5 minute reset
+  timeout before applying the stale rule. Nothing but provisioning traffic and
+  CLI status reads call `getState()`, so a stock-out that ended with the
+  breaker OPEN latched exactly like the HALF_OPEN case (Codex reproduced a 120
+  minute OPEN left untouched by the `.31` sweep).
+- In-flight guard: while the probe lease is consumed and was handed out less
+  than 10 minutes ago, the close waits for that probe's outcome. Without it a
+  probe acquired at minute 29 was closed under at minute 30 and its failure
+  counted 1 of 2 instead of reopening. `tryAcquireProbe()` now stamps the
+  hand-out, so the lease TTL measures what its Javadoc always said.
+- `load()` persists once when `afterLoad()` changed anything. Before, a master
+  with no provisioning traffic reloaded, re-closed and re-counted the same
+  stale entry on every boot (the pre-existing stale-OPEN reset had the same
+  gap).
+- `resetAll()` (the `jenkins hetzner reset` path) persists the empty map and
+  detaches the dropped instances first, so a restart no longer reloads the
+  state the operator just cleared and an outcome recorded on a dropped
+  instance cannot pin the gauge at OPEN with no live breaker left to repair
+  it (Codex reproduced the interleaving). Tests that need "clear memory, keep
+  disk" use `clearForTest()`.
+- The stale close moves the state gauge and the dedicated
+  `hetzner_dc_health_stale_half_open_closes_total` counter (children now
+  pre-created so the first increment is visible to `rate()`), and no longer
+  feeds `hetzner_dc_circuit_breaker_transitions_total`, which dashboards plot
+  as recoveries. One TTL constant for both states.
+- `save()` no longer drops a request that lands while a write is in flight
+  (the coalescing flag was cleared after the snapshot). The writer loops
+  while requests are pending. The load and reset saves above rely on it.
+- Ten new tests pin each of the above, including two that read
+  `hetzner-dc-health.xml` back after the on-load close and after the sweep,
+  and one that drives `doRefresh()` past a failing cloud refresh.
+
+Known trade-off, tracked on DISTMYSQL-652: during a genuine multi-day ARM
+stock-out the close cycles about once per 35 minutes (two failed creates per
+DC per cycle, builds routed to Hetzner inside the healthy window wait on the
+label with no fallback). The alternative is the 104 day latch this fixes. Two
+follow-ups are open there: a queue-wait fallback in the pipeline resolver and
+a capacity gate on the close (Hetzner datacenters `server_types.available`),
+plus the alert on all arm64 breakers non-CLOSED for six hours. The jenkins CLI
+status reads (`hetzner health|breakers|status`) still take the lazy OPEN to
+HALF_OPEN step through Groovy's `b.state`, a CLI-side fix to read the raw
+field is tracked there too.
+
 ## v103.percona.31 (2026-09-22)
 
 Closes the arm64 routing latch behind DISTMYSQL-652: ps80 and pxb sent every

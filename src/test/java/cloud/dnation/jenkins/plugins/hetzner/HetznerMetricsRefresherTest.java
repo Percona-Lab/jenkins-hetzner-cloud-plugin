@@ -294,24 +294,53 @@ class HetznerMetricsRefresherTest {
      */
     @Test
     void sweepStaleBreakers_closesStaleHalfOpen() throws Exception {
-        DcHealthTracker.resetAll();
+        DcHealthTracker.clearForTest();
         try {
             DcCircuitBreaker cb = DcHealthTracker.getBreaker("fsn1", "arm64");
             cb.recordFailure();
             cb.recordFailure();
-            java.lang.reflect.Field openedAt = DcCircuitBreaker.class.getDeclaredField("openedAt");
-            openedAt.setAccessible(true);
-            openedAt.set(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+            for (String name : new String[] {"openedAt", "lastFailureAt"}) {
+                java.lang.reflect.Field field = DcCircuitBreaker.class.getDeclaredField(name);
+                field.setAccessible(true);
+                field.set(cb, System.currentTimeMillis() - 31L * 60 * 1000);
+            }
             assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
-            java.lang.reflect.Field entered = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
-            entered.setAccessible(true);
-            entered.set(cb, System.currentTimeMillis() - 31L * 60 * 1000);
 
             HetznerMetricsRefresher.sweepStaleBreakers();
 
             assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
         } finally {
-            DcHealthTracker.resetAll();
+            DcHealthTracker.clearForTest();
+        }
+    }
+
+    /**
+     * v103.percona.32: doRefresh() sweeps before it touches the clouds, and the
+     * sweep has its own try/catch, so a broken cloud refresh (here: the mocked
+     * Jenkins has no cloud list) cannot skip it.
+     */
+    @Test
+    void doRefresh_sweepsBeforeTheCloudRefreshCanFail() throws Exception {
+        DcHealthTracker.clearForTest();
+        try {
+            DcCircuitBreaker cb = DcHealthTracker.getBreaker("hel1", "arm64");
+            cb.recordFailure();
+            cb.recordFailure();
+            for (String name : new String[] {"openedAt", "lastFailureAt"}) {
+                java.lang.reflect.Field field = DcCircuitBreaker.class.getDeclaredField(name);
+                field.setAccessible(true);
+                field.set(cb, System.currentTimeMillis() - 31L * 60 * 1000);
+            }
+
+            try {
+                HetznerMetricsRefresher.doRefresh();
+            } catch (RuntimeException expectedFromTheMockedCloudList) {
+                // the per-cloud refresh is not under test here
+            }
+
+            assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
+        } finally {
+            DcHealthTracker.clearForTest();
         }
     }
 }
