@@ -9,6 +9,8 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
+import cloud.dnation.jenkins.plugins.hetzner.metrics.HetznerMetricProvider;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -311,6 +313,65 @@ class DcCircuitBreakerTest {
 
     private static void setOpenedAt(DcCircuitBreaker cb, long value) throws Exception {
         Field f = DcCircuitBreaker.class.getDeclaredField("openedAt");
+        f.setAccessible(true);
+        f.set(cb, value);
+    }
+
+    /**
+     * v103.percona.31: a HALF_OPEN breaker that has waited longer than the
+     * stale TTL for a probe outcome closes on request, so a routing layer
+     * that diverted all traffic away cannot pin it HALF_OPEN forever.
+     */
+    @Test
+    void staleHalfOpenClosesAfterTtl() throws Exception {
+        DcCircuitBreaker cb = new DcCircuitBreaker("fsn1", "arm64");
+        cb.recordFailure();
+        cb.recordFailure();
+        setOpenedAt(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+        long ttl = 30L * 60 * 1000;
+        setHalfOpenEnteredAt(cb, System.currentTimeMillis() - ttl - 1);
+        double before = HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("fsn1", "arm64").get();
+
+        assertTrue(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), ttl, "test"));
+
+        assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
+        assertEquals(0, cb.getConsecutiveFailures());
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("fsn1", "arm64").get(), 0.0001);
+        assertEquals(before + 1,
+                HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels("fsn1", "arm64").get(), 0.0001);
+        assertTrue(cb.tryAcquireProbe(), "a CLOSED breaker accepts provisioning again");
+    }
+
+    /** A HALF_OPEN breaker still inside the TTL keeps waiting for its probe. */
+    @Test
+    void youngHalfOpenIsNotClosedBySweep() throws Exception {
+        DcCircuitBreaker cb = new DcCircuitBreaker("hel1", "arm64");
+        cb.recordFailure();
+        cb.recordFailure();
+        setOpenedAt(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        assertFalse(cb.closeIfStaleHalfOpen(System.currentTimeMillis(), 30L * 60 * 1000, "test"));
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+    }
+
+    /** Only HALF_OPEN is eligible: CLOSED and OPEN breakers are untouched even with a zero TTL. */
+    @Test
+    void closeIfStaleHalfOpenIgnoresOpenAndClosed() {
+        DcCircuitBreaker closed = new DcCircuitBreaker("nbg1", "arm64");
+        assertFalse(closed.closeIfStaleHalfOpen(System.currentTimeMillis(), 0, "test"));
+        assertEquals(DcCircuitBreaker.State.CLOSED, closed.getState());
+
+        DcCircuitBreaker open = new DcCircuitBreaker("nbg1", "amd64");
+        open.recordFailure();
+        open.recordFailure();
+        assertFalse(open.closeIfStaleHalfOpen(System.currentTimeMillis(), 0, "test"));
+        assertEquals(DcCircuitBreaker.State.OPEN, open.getState());
+    }
+
+    private static void setHalfOpenEnteredAt(DcCircuitBreaker cb, long value) throws Exception {
+        java.lang.reflect.Field f = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
         f.setAccessible(true);
         f.set(cb, value);
     }

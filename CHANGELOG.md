@@ -2,6 +2,37 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.31 (2026-09-22)
+
+Closes the arm64 routing latch behind DISTMYSQL-652: ps80 and pxb sent every
+ARM64 build to AWS spot from 2026-06-09 to 2026-09-17 while Hetzner had CAX in
+stock. A `HALF_OPEN` breaker only closes through a recorded probe outcome, and
+the probe only happens when a provision reaches the DC. The master-side arm64
+health flag treats `HALF_OPEN` as unhealthy and the pipeline resolver diverts
+all ARM traffic on that flag, so no probe ever arrived and the breakers stayed
+`HALF_OPEN` across every restart (the state is persisted, the probe lease is
+not).
+
+- `DcCircuitBreaker.closeIfStaleHalfOpen()`: a `HALF_OPEN` breaker with no
+  probe outcome for 30 minutes closes on its own, the same TTL the
+  stale-`OPEN` reset already uses. The next real provision decides: success
+  keeps it `CLOSED`, two failures reopen it. Age comes from the transient
+  `halfOpenEnteredAt` while the JVM that opened it is alive, otherwise from
+  the persisted `openedAt` / `lastFailureAt` (deserialization-safe).
+- `HetznerMetricsRefresher` runs the sweep every minute
+  (`DcHealthTracker.closeStaleHalfOpen()`), before the per-cloud refresh and
+  isolated from Hetzner API failures, and persists when it closed anything.
+- `afterLoad()` closes a stale persisted `HALF_OPEN` on load and re-arms the
+  probe lease on a fresh one. Before this a reloaded `HALF_OPEN` had no lease
+  (transient) and answered `isProbeable()=false` until something else closed
+  it.
+- `DcHealthTracker.resetAll()` reports every dropped breaker as `CLOSED` on
+  the gauges and zeroes `hetzner_dc_health_loaded_breakers`. The registry was
+  cleared but the gauge series kept their last value, so the health probe
+  reading the metrics text still saw `HALF_OPEN` after `jenkins hetzner reset`
+  (2026-09-17).
+- New counter `hetzner_dc_health_stale_half_open_closes_total{location,arch}`.
+
 ## v103.percona.30 (2026-08-07)
 
 Hardens the v103.percona.29 retention fix based on a multi-model adversarial

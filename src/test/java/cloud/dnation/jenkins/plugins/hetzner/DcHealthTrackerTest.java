@@ -9,6 +9,8 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
+import cloud.dnation.jenkins.plugins.hetzner.metrics.HetznerMetricProvider;
+
 import com.google.common.collect.Lists;
 import hudson.model.labels.LabelAtom;
 import jenkins.model.Jenkins;
@@ -363,5 +365,61 @@ class DcHealthTrackerTest {
 
     private HetznerServerTemplate makeTemplate(String name, String location) {
         return new HetznerServerTemplate(name, "label1", "img1", location, "cpx32");
+    }
+
+    /**
+     * v103.percona.31: the refresher sweep closes only HALF_OPEN breakers
+     * that have waited longer than the stale TTL; a young HALF_OPEN and an
+     * OPEN breaker are left alone.
+     */
+    @Test
+    void closeStaleHalfOpenSweepsOnlyStaleBreakers() throws Exception {
+        DcCircuitBreaker stale = DcHealthTracker.getBreaker("fsn1", ARM64);
+        forceHalfOpen(stale, 31L * 60 * 1000);
+        DcCircuitBreaker young = DcHealthTracker.getBreaker("hel1", ARM64);
+        forceHalfOpen(young, 60 * 1000);
+        DcCircuitBreaker open = DcHealthTracker.getBreaker("nbg1", ARM64);
+        open.recordFailure();
+        open.recordFailure();
+
+        assertEquals(1, DcHealthTracker.closeStaleHalfOpen());
+
+        assertEquals(DcCircuitBreaker.State.CLOSED, stale.getState());
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, young.getState());
+        assertEquals(DcCircuitBreaker.State.OPEN, open.getState());
+        assertEquals(0, DcHealthTracker.closeStaleHalfOpen(), "second sweep is a no-op");
+    }
+
+    /**
+     * v103.percona.31: resetAll() must leave the gauges reporting CLOSED for
+     * every breaker it drops. The master-side health probe reads the gauge
+     * text, not the registry, so a reset that only cleared the map left the
+     * probe seeing the pre-reset HALF_OPEN (jenkins hetzner reset, 2026-09-17).
+     */
+    @Test
+    void resetAllReportsClosedOnGauges() throws Exception {
+        DcCircuitBreaker b = DcHealthTracker.getBreaker("fsn1", ARM64);
+        forceHalfOpen(b, 60 * 1000);
+        assertEquals(2.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("fsn1", ARM64).get(), 0.0001);
+
+        DcHealthTracker.resetAll();
+
+        assertTrue(DcHealthTracker.getAllBreakers().isEmpty());
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_STATE.labels("fsn1", ARM64).get(), 0.0001);
+        assertEquals(0.0, HetznerMetricProvider.DC_BREAKER_CONSECUTIVE_FAILURES.labels("fsn1", ARM64).get(), 0.0001);
+        assertEquals(0.0, HetznerMetricProvider.DC_HEALTH_LOADED_BREAKERS.get(), 0.0001);
+    }
+
+    /** Drive a breaker to HALF_OPEN and backdate its HALF_OPEN entry by {@code ageMs}. */
+    private static void forceHalfOpen(DcCircuitBreaker cb, long ageMs) throws Exception {
+        cb.recordFailure();
+        cb.recordFailure();
+        java.lang.reflect.Field openedAt = DcCircuitBreaker.class.getDeclaredField("openedAt");
+        openedAt.setAccessible(true);
+        openedAt.set(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+        java.lang.reflect.Field entered = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
+        entered.setAccessible(true);
+        entered.set(cb, System.currentTimeMillis() - ageMs);
     }
 }

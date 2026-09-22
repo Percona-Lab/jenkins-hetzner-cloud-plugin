@@ -286,4 +286,32 @@ class HetznerMetricsRefresherTest {
         }
         return sum;
     }
+
+    /**
+     * v103.percona.31: the one-minute refresher also closes HALF_OPEN DC
+     * breakers that never received their probe, so the unstick does not
+     * depend on any provisioning traffic reaching Hetzner.
+     */
+    @Test
+    void sweepStaleBreakers_closesStaleHalfOpen() throws Exception {
+        DcHealthTracker.resetAll();
+        try {
+            DcCircuitBreaker cb = DcHealthTracker.getBreaker("fsn1", "arm64");
+            cb.recordFailure();
+            cb.recordFailure();
+            java.lang.reflect.Field openedAt = DcCircuitBreaker.class.getDeclaredField("openedAt");
+            openedAt.setAccessible(true);
+            openedAt.set(cb, System.currentTimeMillis() - DcCircuitBreaker.resetTimeoutMs() - 1);
+            assertEquals(DcCircuitBreaker.State.HALF_OPEN, cb.getState());
+            java.lang.reflect.Field entered = DcCircuitBreaker.class.getDeclaredField("halfOpenEnteredAt");
+            entered.setAccessible(true);
+            entered.set(cb, System.currentTimeMillis() - 31L * 60 * 1000);
+
+            HetznerMetricsRefresher.sweepStaleBreakers();
+
+            assertEquals(DcCircuitBreaker.State.CLOSED, cb.getState());
+        } finally {
+            DcHealthTracker.resetAll();
+        }
+    }
 }
