@@ -367,6 +367,11 @@ class DcCircuitBreaker {
         if (arch == null) {
             arch = fallbackArch;
         }
+        // v103.percona.33: XStream bypasses the constructor, so a breaker
+        // loaded from disk had no closes-counter child until its first close
+        // created it at 1, invisible to increase() and rate(). Pre-create it
+        // here as the constructor does for a fresh breaker.
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.labels(location, arch);
         boolean changed = false;
         if (state == State.OPEN && now - openedAt >= staleOpenTtlMs) {
             changed = true;
