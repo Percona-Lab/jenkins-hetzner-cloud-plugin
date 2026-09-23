@@ -49,6 +49,8 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/primaryip/AbstractByLabelSelector.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/shutdown/BeforeHourWrapsPolicy.java
 - src/main/java/cloud/dnation/jenkins/plugins/hetzner/shutdown/IdlePeriodPolicy.java
+- src/main/resources/cloud/dnation/jenkins/plugins/hetzner/HetznerServerComputer/main.jelly
+- src/main/resources/cloud/dnation/jenkins/plugins/hetzner/HetznerServerTemplate/help-location.html
 
 ## Added tests (src/test)
 
@@ -78,6 +80,7 @@ Legend: A = added by Percona, M = modified from upstream.
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HelperTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/HetznerCloudSimpleTest.java
 - src/test/java/cloud/dnation/jenkins/plugins/hetzner/launcher/TestPublicV6AddressOnly.java
+- src/test/java/cloud/dnation/jenkins/plugins/hetzner/primaryip/PrimaryIpStrategyTest.java
 
 ## Modified build / project metadata
 

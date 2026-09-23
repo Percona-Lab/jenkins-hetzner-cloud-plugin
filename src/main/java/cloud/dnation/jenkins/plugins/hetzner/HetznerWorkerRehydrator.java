@@ -11,7 +11,6 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
-import cloud.dnation.hetznerclient.DatacenterDetail;
 import cloud.dnation.hetznerclient.LocationDetail;
 import cloud.dnation.hetznerclient.ServerDetail;
 import cloud.dnation.hetznerclient.ServerType;
@@ -139,10 +138,10 @@ public final class HetznerWorkerRehydrator {
 
             final MatchResult m = findTemplate(templates, vm);
             if (m == MatchResult.NONE) {
-                log.warn("HetznerWorkerRehydrator: no template match for VM (cloud={}, vm={}, type={}, dc={})",
+                log.warn("HetznerWorkerRehydrator: no template match for VM (cloud={}, vm={}, type={}, location={})",
                         cloudName, vmName,
                         vm.getServerType() != null ? vm.getServerType().getName() : "?",
-                        vm.getDatacenter() != null ? vm.getDatacenter().getName() : "?");
+                        vm.getLocation() != null ? vm.getLocation().getName() : "?");
                 HetznerMetricProvider.REHYDRATE_FAILURES
                         .labels(cloudName, HetznerMetricProvider.REHYDRATE_REASON_NO_MATCH).inc();
                 noMatch++;
@@ -150,11 +149,11 @@ public final class HetznerWorkerRehydrator {
             }
             if (m == MatchResult.AMBIGUOUS) {
                 log.warn("HetznerWorkerRehydrator: ambiguous template match for VM "
-                                + "(cloud={}, vm={}, type={}, dc={}); skipping. Add {} label "
+                                + "(cloud={}, vm={}, type={}, location={}); skipping. Add {} label "
                                 + "to disambiguate at provision time.",
                         cloudName, vmName,
                         vm.getServerType() != null ? vm.getServerType().getName() : "?",
-                        vm.getDatacenter() != null ? vm.getDatacenter().getName() : "?",
+                        vm.getLocation() != null ? vm.getLocation().getName() : "?",
                         HetznerConstants.LABEL_TEMPLATE_NAME);
                 HetznerMetricProvider.REHYDRATE_FAILURES
                         .labels(cloudName, HetznerMetricProvider.REHYDRATE_REASON_AMBIGUOUS).inc();
@@ -206,7 +205,7 @@ public final class HetznerWorkerRehydrator {
     /**
      * Match a VM to one of the cloud's templates. Label-first (exact match on
      * {@link HetznerConstants#LABEL_TEMPLATE_NAME}), then heuristic fallback
-     * (serverType + location/datacenter + name prefix). Returns
+     * (serverType + location + name prefix). Returns
      * {@link MatchResult#NONE} or {@link MatchResult#AMBIGUOUS} on failure.
      *
      * <p>Package-private for unit testing.
@@ -236,8 +235,7 @@ public final class HetznerWorkerRehydrator {
         }
 
         final String vmType = (vm.getServerType() != null) ? vm.getServerType().getName() : null;
-        final String vmDc = (vm.getDatacenter() != null) ? vm.getDatacenter().getName() : null;
-        final String vmLoc = locationName(vm.getDatacenter());
+        final String vmLoc = locationName(vm);
         final String vmName = vm.getName() != null ? vm.getName() : "";
 
         final List<HetznerServerTemplate> candidates = new ArrayList<>();
@@ -245,7 +243,7 @@ public final class HetznerWorkerRehydrator {
             if (!matchesType(t, vmType)) {
                 continue;
             }
-            if (!matchesLocation(t, vmDc, vmLoc)) {
+            if (!matchesLocation(t, vmLoc)) {
                 continue;
             }
             if (!matchesPrefix(t, vmName)) {
@@ -267,20 +265,15 @@ public final class HetznerWorkerRehydrator {
     }
 
     /**
-     * Template's {@code location} is the user-supplied string. By
-     * {@code createServer} convention (HetznerCloudResourceManager.java line
-     * 536-540), a value containing {@code -} is treated as a datacenter
-     * (e.g., {@code fsn1-dc8}); otherwise as a location (e.g., {@code fsn1}).
-     * Match against both vm's datacenter name and its location name so we
-     * cover either kind of template configuration.
+     * Template's {@code location} is the user-supplied location name (e.g.
+     * {@code fsn1}), compared against the location the API reports for the
+     * VM. The datacenter form ({@code fsn1-dc8}) left the Hetzner Cloud API
+     * in July 2026 and no longer matches anything.
      */
-    private static boolean matchesLocation(HetznerServerTemplate t, String vmDc, String vmLoc) {
+    private static boolean matchesLocation(HetznerServerTemplate t, String vmLoc) {
         final String tLoc = t.getLocation();
         if (tLoc == null || tLoc.isEmpty()) {
             return false;
-        }
-        if (vmDc != null && tLoc.equalsIgnoreCase(vmDc)) {
-            return true;
         }
         return vmLoc != null && tLoc.equalsIgnoreCase(vmLoc);
     }
@@ -295,11 +288,8 @@ public final class HetznerWorkerRehydrator {
         return vmName.toLowerCase(Locale.ROOT).startsWith(effective + "-");
     }
 
-    private static String locationName(DatacenterDetail dc) {
-        if (dc == null) {
-            return null;
-        }
-        final LocationDetail loc = dc.getLocation();
+    private static String locationName(ServerDetail vm) {
+        final LocationDetail loc = vm.getLocation();
         return loc != null ? loc.getName() : null;
     }
 

@@ -9,6 +9,8 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
+import cloud.dnation.hetznerclient.LocationDetail;
+import cloud.dnation.hetznerclient.ServerDetail;
 import cloud.dnation.jenkins.plugins.hetzner.shutdown.AbstractShutdownPolicy;
 import cloud.dnation.jenkins.plugins.hetzner.shutdown.BeforeHourWrapsPolicy;
 import cloud.dnation.jenkins.plugins.hetzner.shutdown.IdlePeriodPolicy;
@@ -177,6 +179,25 @@ class HetznerServerAgentTest {
         HetznerServerAgent agent = createTestAgent();
         agent.setServerInstance(null);
         assertDoesNotThrow(agent::getDisplayName);
+    }
+
+    @Test
+    void getDisplayNameUsesServerLocationDescription() throws Exception {
+        HetznerServerAgent agent = createTestAgent();
+        HetznerServerInfo info = new HetznerServerInfo(null);
+        info.setServerDetail(new ServerDetail()
+                .location(new LocationDetail().description("Falkenstein DC Park 1")));
+        agent.setServerInstance(info);
+        assertEquals("test-node in Falkenstein DC Park 1", agent.getDisplayName());
+    }
+
+    @Test
+    void getDisplayNameFallsBackToNodeNameWhenServerHasNoLocation() throws Exception {
+        HetznerServerAgent agent = createTestAgent();
+        HetznerServerInfo info = new HetznerServerInfo(null);
+        info.setServerDetail(new ServerDetail());
+        agent.setServerInstance(info);
+        assertEquals("test-node", agent.getDisplayName());
     }
 
     // -- cloudName: persistent field for multi-cloud ghost node scoping --
