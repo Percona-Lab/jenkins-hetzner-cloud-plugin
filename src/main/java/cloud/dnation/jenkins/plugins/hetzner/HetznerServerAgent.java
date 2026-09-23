@@ -108,10 +108,10 @@ public class HetznerServerAgent extends AbstractCloudSlave implements EphemeralN
     public String getDisplayName() {
         try {
             if (serverInstance != null && serverInstance.getServerDetail() != null
-                    && serverInstance.getServerDetail().getDatacenter() != null
-                    && serverInstance.getServerDetail().getDatacenter().getLocation() != null) {
+                    && serverInstance.getServerDetail().getLocation() != null
+                    && serverInstance.getServerDetail().getLocation().getDescription() != null) {
                 return getNodeName() + " in " + serverInstance.getServerDetail()
-                        .getDatacenter().getLocation().getDescription();
+                        .getLocation().getDescription();
             }
         } catch (Exception e) {
             log.debug("Could not resolve display name for {}: {}", getNodeName(), e.getMessage());

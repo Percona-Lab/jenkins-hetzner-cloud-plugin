@@ -57,13 +57,8 @@ public abstract class AbstractByLabelSelector extends AbstractPrimaryIpStrategy 
         if (ip.getAssigneeId() != null) {
             return false;
         }
-        if (!Strings.isNullOrEmpty(server.getLocation())) {
-            if (server.getLocation().equals(ip.getDatacenter().getLocation().getName())) {
-                return true;
-            }
-        }
-        if (!Strings.isNullOrEmpty(server.getDatacenter())) {
-            return server.getDatacenter().equals(ip.getDatacenter().getName());
+        if (!Strings.isNullOrEmpty(server.getLocation()) && ip.getLocation() != null) {
+            return server.getLocation().equals(ip.getLocation().getName());
         }
         return false;
     }

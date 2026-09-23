@@ -12,6 +12,7 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License.
+ Modified by Percona LLC in 2026 (retention/failover/metrics hardening; see NOTICE).
 -->
 <?jelly escape-by-default='true'?>
 <j:jelly xmlns:j="jelly:core">
@@ -77,16 +78,12 @@
                     </j:when>
                 </j:choose>
                 <tr>
-                    <th>Datacenter</th>
-                    <td>${instance.datacenter.name}</td>
-                </tr>
-                <tr>
                     <th>Location</th>
-                    <td>${instance.datacenter.location.description}</td>
+                    <td>${instance.location.description}</td>
                 </tr>
                 <tr>
                     <th>City</th>
-                    <td>${instance.datacenter.location.city}</td>
+                    <td>${instance.location.city}</td>
                 </tr>
             </table>
         </j:otherwise>

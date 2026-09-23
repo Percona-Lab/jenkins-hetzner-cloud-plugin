@@ -11,7 +11,7 @@ runs it across a fleet of Jenkins masters; the patches add a resilience +
 observability layer on top of upstream v103.
 
 - Java package: `cloud.dnation.jenkins.plugins.hetzner`.
-- Version: `103.percona.32` (the `justfile` pin and top `CHANGELOG.md` entry, the pin is the source of truth; `.32` is in development here, newest released tag is `v103.percona.31`).
+- Version: `103.percona.33` (the `justfile` pin and top `CHANGELOG.md` entry, the pin is the source of truth). `.33` is in development here, the newest released tag is `v103.percona.32`.
 - Git remotes: `origin` = `Percona-Lab/jenkins-hetzner-cloud-plugin` (canonical — PRs/releases), `personal` = `nogueiraanderson/hetzner-cloud-plugin`, `upstream` = `jenkinsci/hetzner-cloud-plugin`. Upstream base: dNation tag `103.v843b_12130985`.
 - **Two distinct changelogs, both kept current:** `CHANGELOG.md` = per-version patch history with the **incident/root-cause behind each change** (read it before touching the resilience code — every behavior has a postmortem). `CHANGES.md` = the Apache-2.0 §4(b) added/modified-file ledger.
 
@@ -65,3 +65,4 @@ Tests are **JUnit 5 only** — JUnit 4 imports are banned at build time (`ban-ju
 - **Runtime feature flags** (JVM system properties, both default **off**): `-Dhetzner.rehydrate.enabled=true` enables the rehydrator; `-Dhetzner.prometheus.allowNonLoopback=true` drops the loopback gate on the metrics endpoint (only safe behind a separate auth layer). Other tuning knobs exist (`hetzner.hung-build.*`, `hetzner.rehydrate.grace-period-minutes`, `cloud.dnation.hetznerclient.apiendpoint`, `cloud.dnation.hetzner.http.loglevel`) — `grep 'System.getProperty\|getBoolean'` under `src/main/java`.
 - **`.hpi` artifacts and `target/` are git-ignored**, and the built `.hpi` bundles only what is under `src/` — this `CLAUDE.md` lives at the repo root for Claude Code and never ships inside the plugin. (`CHANGES.md` still lists it among local-only artifacts; that note predates tracking it here.)
 - The CRW timer-death fix (v103.percona.1) was contributed upstream and ships as jenkinsci v106; v.27 then ported upstream's `5a7a304` back on top. Check `CHANGELOG.md` before assuming a behavior is upstream-shared.
+- **Locations only, no datacenters (v103.percona.33).** Hetzner removed `datacenter` from servers and primary IPs in July 2026 and retires `GET /v1/datacenters` on 2026-10-01. A template `location` is a location name (`fsn1`), and `ServerDetail.getDatacenter()` is null at runtime even though `hetzner-cloud-client-java` 1.13.0 still declares it, read `getLocation()`. Every `org.apache.commons.lang` import must be `lang3` (the `commons-lang3-api` plugin is a declared dependency, Jenkins 2.579+ dropped Lang 2).

@@ -2,6 +2,78 @@
 
 All notable Percona patches to [hetzner-cloud-plugin](https://github.com/jenkinsci/hetzner-cloud-plugin) are documented here.
 
+## v103.percona.33 (2026-09-23)
+
+Upstream sync of two jenkinsci commits (ported by hand, the fork shares no git
+history with upstream) plus a fix to the `.32` stale-close metric found on the
+first `.32` deploy.
+
+**Datacenter removal (upstream `27293cf`).** Hetzner Cloud removed the
+`datacenter` property from servers and primary IPs on 2026-07-01, replaced by
+`location`, and `GET /v1/datacenters` returns 410 Gone from 2026-10-01
+([Hetzner changelog 2026-07](https://docs.hetzner.cloud/changelog#2026-07)). A
+live probe on 2026-09-23 confirmed the server object carries `location` and no
+`datacenter`, so on `.32` the agent display name already fell back to the bare
+node name and the rehydrator's heuristic template match (the fallback for VMs
+without the `jenkins.io/template-name` label) compared against a null
+datacenter. From 2026-10-01 the credentials check behind the cloud
+configuration form would fail outright.
+
+- `hetzner-cloud-client-java` 1.10.0 to 1.13.0, the release that models
+  `ServerDetail.location` and `PrimaryIpDetail.location`. The client's own
+  dependencies are unchanged between the two versions.
+- `ConfigurationValidator.validateCloudConfig()` lists the first location
+  instead of all datacenters. `validateDatacenter()` and the `-` heuristic in
+  `verifyLocation()` are gone, a template location is always a location name
+  (`fsn1`, `nbg1`, `hel1`). Upstream passes page 0 to the locations call, the
+  port passes page 1, the documented minimum (Hetzner clamps 0 to 1 today,
+  probed live).
+- `createServer()` always sends `location`. A legacy `fsn1-dc8` style template
+  location is now rejected by the API at provision time instead of being sent
+  as a datacenter. The fleet's `htz.cloud.groovy` configs use plain locations
+  only.
+- `HetznerServerAgent.getDisplayName()` reads `location.description`,
+  `AbstractByLabelSelector.isIpUsable()` compares `location.name` on the
+  primary IP, with a null guard upstream lacks.
+- `HetznerWorkerRehydrator` matches templates on `ServerDetail.location`. A
+  datacenter-form template location no longer matches anything (pinned by
+  test), fix such a template to the location name.
+- The computer page keeps Location and City from `location` and drops the
+  Datacenter row (upstream dropped all three rows). `help-location.html` and
+  the README no longer offer `nbg1-dc3` as a valid value.
+
+**Commons Lang 2 to 3 (upstream `024bc5d`, minimal form).** Jenkins core
+2.579 and later no longer ship `commons-lang` 2.6, so the
+`org.apache.commons.lang.RandomStringUtils` import behind
+`HetznerServerTemplate.generateNodeName()` would fail on every provision
+there. Both imports (the one in `HetznerCloud` is unused) now point at
+`org.apache.commons.lang3`, `randomAlphanumeric(16)` stays as upstream kept
+it, and the plugin depends on the `commons-lang3-api` plugin (versionless,
+managed by the Jenkins bom at `3.17.0-87.v5cf526e63b_8b_`). Unlike upstream
+the parent POM stays at 5.21 with baseline 2.479.3, so the parent 6.x
+`ban-commons-lang-2` enforcer rule is not enabled here. Deploy prerequisite:
+`.33` declares `commons-lang3-api` as a required plugin, a master without it
+refuses to load the plugin. Verified on 2026-09-23 with `jenkins plugin status
+commons-lang3-api -i <inst>`: all 10 active masters run 3.20.0-109, active.
+
+**Stale-close counter after a restart (fix to the `.32` metric).** `.32`
+pre-created the `hetzner_dc_health_stale_half_open_closes_total` child in the
+`DcCircuitBreaker` constructor, which XStream bypasses, so the six breakers
+ps57 reloaded from `hetzner-dc-health.xml` right after the `.32` deploy had no
+child series at all, and the first sweep close would have created it at 1,
+invisible to `increase()` and `rate()`. `afterLoad()` now pre-creates the
+child too. Three `DcHealthPersistenceTest` cases read the collector samples
+without touching `labels()` (which would create the child itself): 0 after
+load, exactly 1 after a stale close on load, and 0 then 1 across the first
+sweep close after a restart.
+
+The jenkins CLI breaker reads (`hetzner health|breakers|status`) now read the
+raw `state` field (`b.@state`) instead of Groovy's `b.state` getter, which
+closes the CLI-side follow-up noted under `.32`. Capacity gate follow-up
+(DISTMYSQL-652): Hetzner publishes per-location availability as
+`server_types[].locations[].available` and `.recommended`, which client
+1.13.0 does not model yet.
+
 ## v103.percona.32 (2026-09-22)
 
 Review hardening of the v103.percona.31 self-heal, from a nine-lane adversarial

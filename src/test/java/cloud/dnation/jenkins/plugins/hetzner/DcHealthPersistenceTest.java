@@ -13,6 +13,7 @@ package cloud.dnation.jenkins.plugins.hetzner;
 
 import cloud.dnation.jenkins.plugins.hetzner.metrics.HetznerMetricProvider;
 import hudson.XmlFile;
+import io.prometheus.client.Collector;
 import jenkins.model.Jenkins;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,12 +22,14 @@ import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
 
 import java.io.File;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @WithJenkins
@@ -337,6 +340,86 @@ class DcHealthPersistenceTest {
 
         File xml = new File(j.jenkins.getRootDir(), "hetzner-dc-health.xml");
         await().atMost(10, TimeUnit.SECONDS).until(() -> stateOnDisk(xml, "fsn1:arm64") == DcCircuitBreaker.State.CLOSED);
+    }
+
+    /**
+     * v103.percona.33: XStream bypasses the constructor, so a breaker loaded
+     * from disk had no stale-close counter child until its first close
+     * created it at 1, which increase() and rate() never see (ps57 right
+     * after the .32 deploy: six reloaded breakers, no child series at all).
+     * afterLoad() pre-creates the child at 0 like the constructor does.
+     */
+    @Test
+    void loadPreCreatesStaleCloseCounterChild() throws Exception {
+        persistHalfOpen("fsn1", "amd64", 6L * 60 * 1000, 2);
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.remove("fsn1", "amd64");
+        assertNull(staleCloseChild("fsn1", "amd64"), "fixture: no child before load, as after a JVM restart");
+
+        DcHealthTracker.clearForTest();
+        DcHealthTracker.load();
+
+        assertEquals(DcCircuitBreaker.State.HALF_OPEN, DcHealthTracker.getBreaker("fsn1", "amd64").getState());
+        Double child = staleCloseChild("fsn1", "amd64");
+        assertNotNull(child, "afterLoad() must pre-create the closes counter child");
+        assertEquals(0.0, child, 0.0001);
+    }
+
+    /** A stale HALF_OPEN closed on load reads exactly 1 on the pre-created child. */
+    @Test
+    void staleCloseOnLoadReadsOneOnPreCreatedChild() throws Exception {
+        persistHalfOpen("nbg1", "amd64", 40L * 60 * 1000, 3);
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.remove("nbg1", "amd64");
+        assertNull(staleCloseChild("nbg1", "amd64"));
+
+        DcHealthTracker.clearForTest();
+        DcHealthTracker.load();
+
+        assertEquals(DcCircuitBreaker.State.CLOSED, DcHealthTracker.getBreaker("nbg1", "amd64").getState());
+        Double child = staleCloseChild("nbg1", "amd64");
+        assertNotNull(child);
+        assertEquals(1.0, child, 0.0001);
+    }
+
+    /**
+     * The ps57 sequence: a young HALF_OPEN reloads with the child at 0, then
+     * the first sweep close after the restart moves it to 1, a step that
+     * increase() can see.
+     */
+    @Test
+    void sweepCloseAfterLoadStepsPreCreatedChildToOne() throws Exception {
+        persistHalfOpen("hel1", "amd64", 6L * 60 * 1000, 2);
+        HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.remove("hel1", "amd64");
+
+        DcHealthTracker.clearForTest();
+        DcHealthTracker.load();
+        Double afterLoad = staleCloseChild("hel1", "amd64");
+        assertNotNull(afterLoad);
+        assertEquals(0.0, afterLoad, 0.0001);
+
+        DcCircuitBreaker loaded = DcHealthTracker.getBreaker("hel1", "amd64");
+        for (String name : new String[] {"openedAt", "lastFailureAt"}) {
+            java.lang.reflect.Field field = DcCircuitBreaker.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(loaded, System.currentTimeMillis() - 31L * 60 * 1000);
+        }
+
+        assertEquals(1, DcHealthTracker.closeStaleHalfOpen());
+        assertEquals(1.0, staleCloseChild("hel1", "amd64"), 0.0001);
+    }
+
+    /**
+     * Value of the stale-close counter child for (location, arch) read from the
+     * collector samples, so the lookup cannot create the child. Null when absent.
+     */
+    private static Double staleCloseChild(String location, String arch) {
+        for (Collector.MetricFamilySamples family : HetznerMetricProvider.DC_HEALTH_STALE_HALF_OPEN_CLOSES.collect()) {
+            for (Collector.MetricFamilySamples.Sample sample : family.samples) {
+                if (sample.name.endsWith("_total") && sample.labelValues.equals(List.of(location, arch))) {
+                    return sample.value;
+                }
+            }
+        }
+        return null;
     }
 
     /** Read one breaker's state straight from the XML file, or null when absent. */

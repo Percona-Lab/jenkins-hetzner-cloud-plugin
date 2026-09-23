@@ -15,7 +15,6 @@
  */
 package cloud.dnation.jenkins.plugins.hetzner;
 
-import cloud.dnation.hetznerclient.DatacenterDetail;
 import cloud.dnation.hetznerclient.LocationDetail;
 import cloud.dnation.hetznerclient.ServerDetail;
 import cloud.dnation.hetznerclient.ServerType;
@@ -70,7 +69,7 @@ class HetznerWorkerRehydratorTest {
         HetznerServerTemplate t1 = template("amd64-build", "img1", "fsn1", "cpx41");
         HetznerServerTemplate t2 = template("arm64-build", "img2", "fsn1", "cax41");
 
-        ServerDetail vm = vm("amd64-build-abc123", "cpx41", "fsn1-dc8", "fsn1",
+        ServerDetail vm = vm("amd64-build-abc123", "cpx41", "fsn1",
                 ImmutableMap.of(HetznerConstants.LABEL_TEMPLATE_NAME, "amd64-build"));
 
         HetznerWorkerRehydrator.MatchResult m =
@@ -87,7 +86,7 @@ class HetznerWorkerRehydratorTest {
         HetznerServerTemplate amd = template("amd64-build", "img1", "fsn1", "cpx41");
         HetznerServerTemplate arm = template("arm64-build", "img2", "fsn1", "cax41");
 
-        ServerDetail vm = vm("amd64-build-xyz", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("amd64-build-xyz", "cpx41", "fsn1", null);
 
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(List.of(amd, arm), vm);
@@ -95,18 +94,20 @@ class HetznerWorkerRehydratorTest {
     }
 
     /**
-     * Template location may be the long datacenter form (fsn1-dc8). Match
-     * against vm.datacenter.name (not just the short location name).
+     * The datacenter form of a template location (fsn1-dc8) left the Hetzner
+     * Cloud API in July 2026, a server only reports its location. Such a
+     * template no longer matches, the operator has to change it to the
+     * location name.
      */
     @Test
-    void findTemplate_heuristic_templateLocationIsDatacenter() {
+    void findTemplate_heuristic_datacenterFormTemplateNoLongerMatches() {
         HetznerServerTemplate t = template("amd64-dc", "img1", "fsn1-dc8", "cpx41");
 
-        ServerDetail vm = vm("amd64-dc-aaa", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("amd64-dc-aaa", "cpx41", "fsn1", null);
 
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(List.of(t), vm);
-        assertSame(t, m.template);
+        assertSame(HetznerWorkerRehydrator.MatchResult.NONE, m);
     }
 
     /**
@@ -120,7 +121,7 @@ class HetznerWorkerRehydratorTest {
         HetznerServerTemplate twin1 = templateWithPrefix("twin-1", "img1", "fsn1", "cpx41", "");
         HetznerServerTemplate twin2 = templateWithPrefix("twin-2", "img1", "fsn1", "cpx41", "");
 
-        ServerDetail vm = vm("hcloud-abc", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("hcloud-abc", "cpx41", "fsn1", null);
 
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(List.of(twin1, twin2), vm);
@@ -136,7 +137,7 @@ class HetznerWorkerRehydratorTest {
         HetznerServerTemplate amd = templateWithPrefix("amd64-build", "img1", "fsn1", "cpx41", "amd-worker");
         HetznerServerTemplate amdAlt = templateWithPrefix("amd64-alt", "img1", "fsn1", "cpx41", "alt-worker");
 
-        ServerDetail vm = vm("alt-worker-xyz", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("alt-worker-xyz", "cpx41", "fsn1", null);
 
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(List.of(amd, amdAlt), vm);
@@ -150,7 +151,7 @@ class HetznerWorkerRehydratorTest {
     void findTemplate_noMatch_returnsNone() {
         HetznerServerTemplate t = template("amd64-build", "img1", "fsn1", "cpx41");
 
-        ServerDetail vm = vm("hcloud-zzz", "ccx33", "nbg1-dc3", "nbg1", null);
+        ServerDetail vm = vm("hcloud-zzz", "ccx33", "nbg1", null);
 
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(List.of(t), vm);
@@ -167,7 +168,7 @@ class HetznerWorkerRehydratorTest {
     void findTemplate_staleLabel_fallsThroughToHeuristic() {
         HetznerServerTemplate t = template("amd64-build-v2", "img1", "fsn1", "cpx41");
 
-        ServerDetail vm = vm("amd64-build-v2-foo", "cpx41", "fsn1-dc8", "fsn1",
+        ServerDetail vm = vm("amd64-build-v2-foo", "cpx41", "fsn1",
                 ImmutableMap.of(HetznerConstants.LABEL_TEMPLATE_NAME, "amd64-build-v1-gone"));
 
         HetznerWorkerRehydrator.MatchResult m =
@@ -180,7 +181,7 @@ class HetznerWorkerRehydratorTest {
      */
     @Test
     void findTemplate_emptyTemplates_returnsNone() {
-        ServerDetail vm = vm("hcloud-1", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("hcloud-1", "cpx41", "fsn1", null);
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(Collections.emptyList(), vm);
         assertSame(HetznerWorkerRehydrator.MatchResult.NONE, m);
@@ -191,7 +192,7 @@ class HetznerWorkerRehydratorTest {
      */
     @Test
     void findTemplate_nullTemplates_returnsNone() {
-        ServerDetail vm = vm("hcloud-1", "cpx41", "fsn1-dc8", "fsn1", null);
+        ServerDetail vm = vm("hcloud-1", "cpx41", "fsn1", null);
         HetznerWorkerRehydrator.MatchResult m =
                 HetznerWorkerRehydrator.findTemplate(null, vm);
         assertSame(HetznerWorkerRehydrator.MatchResult.NONE, m);
@@ -215,8 +216,7 @@ class HetznerWorkerRehydratorTest {
         return t;
     }
 
-    private static ServerDetail vm(String name, String serverType,
-                                   String dcName, String locationName,
+    private static ServerDetail vm(String name, String serverType, String locationName,
                                    java.util.Map<String, String> labels) {
         ServerDetail s = new ServerDetail();
         s.setName(name);
@@ -227,10 +227,7 @@ class HetznerWorkerRehydratorTest {
 
         LocationDetail loc = new LocationDetail();
         loc.setName(locationName);
-        DatacenterDetail dc = new DatacenterDetail();
-        dc.setName(dcName);
-        dc.setLocation(loc);
-        s.setDatacenter(dc);
+        s.setLocation(loc);
 
         if (labels != null) {
             s.setLabels(labels);
